@@ -100,9 +100,9 @@ results = {
 ```
 In contrast, for general overall measure without dividing per class: 
 ```python
-from calfram.calibrationframework import classwise_calbibration
+from calfram.calibrationframework import classwise_calibration
 
-results_cw = classwise_calbibration(results)
+results_cw = classwise_calibration(results)
 results_cw = {'ec_g': np.array([]), # ECI_global
  'ec_dir': np.array([]), #ECI_balance
  'ece_freq': np.array([]), #ECE based on freq. of positive
