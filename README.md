@@ -1,3 +1,4 @@
+![CalFram:](logo.png)
 ---
 <h1 align="center">CalFram: A Comprehensive Framework for Calibration Assessment</h1>
 <p align="center">
