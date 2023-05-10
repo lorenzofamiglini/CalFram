@@ -382,6 +382,7 @@ def calibrationdiagnosis(classes_scores, strategy = 'doane', undersampling=False
             else:
                 fcc_dir = np.nan
 
+                
             ece = compute_eces(classes_scores[i]['y_one_hot_nclass'], classes_scores[i]['y_prob_one_hotnclass'],
                             classes_scores[i]['y_pred_one_hotnclass'], bins_dict['binids'],
                             bins_dict['bins'],'fp',int(i))
