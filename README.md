@@ -1,9 +1,7 @@
 ---
+<h1 align="center">CalFram: A Comprehensive Framework for Calibration Assessment</h1>
 <p align="center">
-  <h1>CalFram: A Comprehensive Framework for Calibration Assessment</h1>
-</p>
-<p align="center">
-  <img src="reliabilitydiag.png" alt="Reliability Diagram"/>
+  <img src="reliabilitydiag.png" alt="Reliability Diagram" width="60%"/>
 </p>
 
 ## Introduction
