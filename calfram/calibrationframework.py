@@ -413,6 +413,6 @@ def classwise_calbibration(measures):
     classes_overconf = np.nanmean([measures[key]['ec_overconf'] for key in measures.keys()]).round(3)
     classes_ece = np.mean([measures[key]['ece_fp'] for key in measures.keys()]).round(3)
     classes_ece_acc = np.mean([measures[key]['ece_acc'] for key in measures.keys()]).round(3)
-    classes_brier = np.mean([measures[key]['brier_loss'] for key in measures.keys()]).round(3)
-    return {'ec_g': classes_global, 'ec_dir': classes_direction, '1-ece': 1-classes_ece, '1-ece_acc': 1-classes_ece_acc,
+    classes_brier = np.mean([measures[key]['brier_loss'] for key in measures.keys()]).round(3)/2
+    return {'ec_g': classes_global, 'ec_dir': classes_direction, 'ece_freq': classes_ece, 'ece_acc': classes_ece_acc,
             'ec_underconf': classes_underconf, 'ec_overconf': classes_overconf, 'brierloss': classes_brier} #'1-ece': classes_ece
