@@ -26,7 +26,7 @@ In addition, we report the Brier Score Loss, ECE accuracy-based, and ECE frequen
 ## Installation
 
 ```bash
-pip install calfram
+pip install calibrationframework
 ```
 
 ## Example
