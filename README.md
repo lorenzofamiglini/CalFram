@@ -42,11 +42,34 @@ y_true = ... # shape: (n, 1)
 y_prob = ... # shape: (n, c), where c is the number of classes 
 
 classes_scores = select_probability(y_test, y_prob, y_pred)
+classes_scores = {
+    'class_0': {
+        'proba': np.array([]),  # The class probabilities for the given class as a 2D numpy array
+        'y': np.array([]),  # The true labels for the given class as a 1D numpy array
+        'y_one_hot_nclass': np.array([]),  # The true labels in one-hot encoding format as a 2D numpy array
+        'y_prob_one_hotnclass': np.array([]),  # The predicted probabilities in one-hot encoding format as a 2D numpy array
+        'y_pred_one_hotnclass': np.array([]),  # The predicted labels in one-hot encoding format as a 2D numpy array
+    },
+    'class_1': {
+        'proba': np.array([]),  # The class probabilities for the given class as a 2D numpy array
+        'y': np.array([]),  # The true labels for the given class as a 1D numpy array
+        'y_one_hot_nclass': np.array([]),  # The true labels in one-hot encoding format as a 2D numpy array
+        'y_prob_one_hotnclass': np.array([]),  # The predicted probabilities in one-hot encoding format as a 2D numpy array
+        'y_pred_one_hotnclass': np.array([]),  # The predicted labels in one-hot encoding format as a 2D numpy array
+    },
+    # ...
+    # The same keys and subkeys would be repeated for each class
+}
+```
 
+Once the object classes_scores is created: 
+```python
 # Compute all the metrics based on 15 bins with equal-width
 results, _ = calibrationdiagnosis(classes_scores, strategy = 15, adaptive = False)
 # Or, compute all the metrics based on automatic monothonic sweep method for identifying the right number of bins 
 results, _ = calibrationdiagnosis(classes_scores, adaptive = True)
+
+
 ```
 
 ## Contributing
