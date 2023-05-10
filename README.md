@@ -23,6 +23,11 @@ Together, these measures provide a complete understanding of your model's calibr
 
 In addition, we report the Brier Score Loss, ECE accuracy-based, and ECE frequency-based metrics.
 
+## Installation
+
+```bash
+pip install calfram
+
 ## Example
 ```python
 from calfram.calibrationframework import select_probability, calibrationdiagnosis
