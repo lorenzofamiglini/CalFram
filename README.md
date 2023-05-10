@@ -1,7 +1,4 @@
-The README file looks pretty good! I've just made a few minor edits for clarity and consistency:
-
 ---
-
 # CalFram: A Comprehensive Framework for Calibration Assessment
 
 ## Introduction
