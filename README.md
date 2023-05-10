@@ -1,5 +1,10 @@
 ---
-# CalFram: A Comprehensive Framework for Calibration Assessment
+<p align="center">
+  <h1>CalFram: A Comprehensive Framework for Calibration Assessment</h1>
+</p>
+<p align="center">
+  <img src="reliabilitydiag.png" alt="Reliability Diagram"/>
+</p>
 
 ## Introduction
 
