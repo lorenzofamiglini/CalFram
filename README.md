@@ -14,10 +14,10 @@ The higher the ECI, the better the calibration.
 
 Our framework offers various calibration metrics for a holistic evaluation of your model's calibration. It works directly with numpy arrays, making it model-agnostic. These metrics include:
 
-- **Global Measures (ECI$_g$)**: For an overall assessment of the model's calibration. Bounds [0,1], 0 is totally non-calibrated, 1 is perfectly calibrated.
-- **Local Measures (ECI$_l$)**: To provide detailed insight into the model's performance in specific regions of the input space. The bounds are the same as the global measure.
-- **Balance Measures (ECI$_b$)**: To quantify how much the model is overconfident or underconfident. Bounds [-1, 1], -1 is totally underconfident, 1 is totally overconfident, and 0 is the trade-off. 
-- **Overconfident and Underconfident Area Metrics (ECI_${over}$, ECI_${under}$)**: To highlight parts of the input space where the model is especially overconfident or underconfident. The bounds are the same as the global measure.
+- **Global Measures (ECI<sub>g</sub>)**: For an overall assessment of the model's calibration. Bounds [0,1], 0 is totally non-calibrated, 1 is perfectly calibrated.
+- **Local Measures (ECI<sub>l</sub>)**: To provide detailed insight into the model's performance in specific regions of the input space. The bounds are the same as the global measure.
+- **Balance Measures (ECI<sub>b</sub>)**: To quantify how much the model is overconfident or underconfident. Bounds [-1, 1], -1 is totally underconfident, 1 is totally overconfident, and 0 is the trade-off. 
+- **Overconfident and Underconfident Area Metrics (ECI_<sub>over</sub>, ECI<sub>under</sub>)**: To highlight parts of the input space where the model is especially overconfident or underconfident. The bounds are the same as the global measure.
 - **ECE Accuracy based formulation**
 - **ECE Frequency based formulation**
 - **Brier Score Loss** (Note: for both binary and multiclass, the brier score loss is bounded in [0,1]).
