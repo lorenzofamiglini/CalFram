@@ -1,10 +1,10 @@
-![CalFram:](logo.png)
----
-<h1 align="center">CalFram: A Comprehensive Framework for Calibration Assessment</h1>
+<div align="center">
+  <img src="logo.png" alt="CalFram Logo" width="40%" style="display: inline-block;"/>
+  <h1 style="display: inline-block;">CalFram: A Comprehensive Framework for Calibration Assessment</h1>
+</div>
 <p align="center">
   <img src="reliabilitydiag.png" alt="Reliability Diagram" width="40%"/>
 </p>
-
 ## Introduction
 
 Calibration is a multidimensional concept essential for assessing machine learning models. It helps understand a model's global calibration performance, identify miscalibrated regions of the probability space, and determine the level of overconfidence or underconfidence of a model. Therefore, multi-dimensionality is critical to gain a thorough understanding of a machine learning model's performance and limitations.
