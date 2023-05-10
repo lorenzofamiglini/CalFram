@@ -12,7 +12,7 @@ setup(
     'pandas',
     'numpy',
     'matplotlib',
-    'sklearn',
+    'scikit-learn',
     'ipdb',
 ]
 )
