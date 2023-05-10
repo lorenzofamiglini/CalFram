@@ -5,6 +5,7 @@
 <p align="center">
   <img src="reliabilitydiag.png" alt="Reliability Diagram" width="40%"/>
 </p>
+
 ## Introduction
 
 Calibration is a multidimensional concept essential for assessing machine learning models. It helps understand a model's global calibration performance, identify miscalibrated regions of the probability space, and determine the level of overconfidence or underconfidence of a model. Therefore, multi-dimensionality is critical to gain a thorough understanding of a machine learning model's performance and limitations.
