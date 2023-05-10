@@ -4,6 +4,7 @@ import matplotlib.pyplot as plt
 from ece import compute_eces
 from sklearn.preprocessing import OneHotEncoder
 import random
+from sklearn.metrics import brier_score_loss
 
 def end_points(x,y):
     #check coordinates (0,0) and (1,1)
@@ -386,13 +387,15 @@ def calibrationdiagnosis(classes_scores, strategy = 'doane', undersampling=False
                             bins_dict['bins'],'fp',int(i))
             ece_acc = compute_eces(classes_scores[i]['y_one_hot_nclass'], classes_scores[i]['y_prob_one_hotnclass'],
                             classes_scores[i]['y_pred_one_hotnclass'], bins_dict['binids'],  bins_dict['bins'],'acc',int(i))
-
+            brierloss = brier_score_loss(classes_scores[i]['y'], classes_scores[i]['proba'][:,1])
+        
             dict_msr = {'ece_acc': ece_acc, 'ece_fp':ece, 'ec_g': fcc_g, 'ec_under': 1-up_dist,'under_fr': up_weight, 'ec_over': 1-below_dist, 
-                        'over_fr': below_weight,'ec_underconf': fcc_underconf,'ec_overconf': fcc_overconf, 
-                        'ec_dir': fcc_dir, 'over_pts': below_pts, 'under_pts': up_pts, 
-                        'ec_l_all': 1-pts_distance_norm, 'where': where_are,
-                        'relative-freq': bins_dict['binfr'], 'x': x, 'y' :y
-                        }
+                    'over_fr': below_weight,'ec_underconf': fcc_underconf,'ec_overconf': fcc_overconf, 
+                    'ec_dir': fcc_dir, 'brier_loss': brierloss, 'over_pts': below_pts, 'under_pts': up_pts, 
+                    'ec_l_all': 1-pts_distance_norm, 'where': where_are,
+                    'relative-freq': bins_dict['binfr'], 'x': x, 'y' :y
+                    }
+
 
         measures['{}'.format(i)] = dict_msr
         binning_dict['{}'.format(i)] = bins_dict
