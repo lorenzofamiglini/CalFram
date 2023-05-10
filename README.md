@@ -107,8 +107,8 @@ results_cw = {'ec_g': np.array([]), # ECI_global
  'ec_dir': np.array([]), #ECI_balance
  'ece_freq': np.array([]), #ECE based on freq. of positive
  'ece_acc': np.array([]), #ECE based on Accuracy
- 'ec_underconf': np.array([]), #ECE global for the underconfident area
- 'ec_overconf': np.array([]), #ECE global for the overconfident area
+ 'ec_underconf': np.array([]), #ECI global for the underconfident area
+ 'ec_overconf': np.array([]), #ECI global for the overconfident area
  'brierloss': np.array([])} #Brier Loss cw bounded in 0,1
 ```
 
