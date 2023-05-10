@@ -69,6 +69,33 @@ results, _ = calibrationdiagnosis(classes_scores, strategy = 15, adaptive = Fals
 # Or, compute all the metrics based on automatic monothonic sweep method for identifying the right number of bins 
 results, _ = calibrationdiagnosis(classes_scores, adaptive = True)
 
+results = {
+    'class_0': { 
+        'ece_acc': np.array([]),  # Expected Calibration Error for accuracy for class '0'
+        'ece_fp': np.array([]),  # Expected Calibration Error for freq positives for class '0'
+        'ec_g': np.array([]),  # A measure of global Estimated Calibration Index for class '0'
+        'ec_under': np.array([]),  # Estimated Calibration Index for under-confident predictions for class '0'
+        'under_fr': np.array([]),  # Relative frequency of under-confident predictions for class '0'
+        'ec_over': np.array([]),  #  Estimated Calibration Index for over-confident predictions for class '0'
+        'over_fr': np.array([]),  # Relative frequency of over-confident predictions for class '0'
+        'ec_underconf': np.array([]),  # A measure of under-confidence across all predictions for class '0'
+        'ec_overconf': np.array([]),  # A measure of over-confidence across all predictions for class '0'
+        'ec_dir': np.array([]),  # A measure of the general direction of miscalibration for class '0'
+        'brier_loss': np.array([]),  # Brier score loss for class '0'
+        'over_pts': np.array([]),  # Points that represent over-confident predictions for class '0'
+        'under_pts': np.array([]),  # Points that represent under-confident predictions for class '0'
+        'ec_l_all': np.array([]),  # All local Estimated Calibration measures for class '0'
+        'where': np.array([]),  # An array indicating where each bin falls for class '0'
+        'relative-freq': np.array([]),  # The relative frequencies of the samples falling into each bin for class '0'
+        'x': np.array([]),  # The mean predicted confidence of each bin for class '0'
+        'y': np.array([]),  # The estimated probability or actual accuracy of each bin for class '0'
+    },
+    'class_1': {
+        'ece_acc': np.array([]),  # Expected Calibration Error for accuracy for class '1'
+        # ... Same as above, but for class '1'
+    },
+    # ... The same keys would be repeated for each class
+}
 
 ```
 
