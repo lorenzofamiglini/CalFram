@@ -406,7 +406,7 @@ def calibrationdiagnosis(classes_scores, strategy = 'doane', undersampling=False
     return measures, binning_dict
 
 
-def classwise_calbibration(measures):
+def classwise_calibration(measures):
     classes_global = np.mean([measures[key]['ec_g'] for key in measures.keys()]).round(3)
     classes_direction = np.mean([measures[key]['ec_dir'] for key in measures.keys()]).round(3)
     classes_underconf = np.nanmean([measures[key]['ec_underconf'] for key in measures.keys()]).round(3)
