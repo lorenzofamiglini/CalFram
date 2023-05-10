@@ -27,6 +27,7 @@ In addition, we report the Brier Score Loss, ECE accuracy-based, and ECE frequen
 
 ```bash
 pip install calfram
+```
 
 ## Example
 ```python
