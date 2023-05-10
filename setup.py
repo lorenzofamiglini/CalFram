@@ -2,7 +2,7 @@ from setuptools import setup, find_packages
 
 setup(
     name='calibrationframework',
-    version='0.1.0',
+    version='0.1.2',
     url='https://github.com/lorenzofamiglini/CalFram',
     author='Lorenzo Famiglini',
     author_email='lorenzofamiglini@gmail.com',
