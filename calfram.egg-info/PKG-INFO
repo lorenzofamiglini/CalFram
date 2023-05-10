@@ -1,8 +1,0 @@
-Metadata-Version: 2.1
-Name: calfram
-Version: 0.1.0
-Summary: A comprehensive framework for assessing calibration in machine and deep learning models
-Home-page: https://github.com/lorenzofamiglini/CalFram
-Author: Lorenzo Famiglini
-Author-email: lorenzofamiglini@gmail.com
-License-File: LICENSE

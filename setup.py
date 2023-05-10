@@ -1,7 +1,7 @@
 from setuptools import setup, find_packages
 
 setup(
-    name='calfram',
+    name='calibrationframework',
     version='0.1.0',
     url='https://github.com/lorenzofamiglini/CalFram',
     author='Lorenzo Famiglini',
@@ -12,7 +12,7 @@ setup(
     'pandas',
     'numpy',
     'matplotlib',
-    'sklearn',
+    'scikit-learn',
     'ipdb',
 ]
 )
