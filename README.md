@@ -118,5 +118,21 @@ results_cw = {'ec_g': np.array([]), # ECI_global
 ## Contributing
 We welcome contributions to this project. Please feel free to open issues or submit pull requests.
 
+## Citations
+
+If you find this project useful in your research, please consider citing:
+
+```bibtex
+@inproceedings{famiglini2023calibration,
+  title={Towards a Rigorous Calibration Assessment Framework: Advancements in Metrics, Methods, and Use},
+  author={Famiglini, Lorenzo and Campagner, Andrea and Cabitza, Federico},
+  booktitle={European Conference on Artificial Intelligence},
+  pages={},
+  year={2023},
+  address={Kraków, Poland},
+  publisher={},
+  date={30.09 - 5.10}
+}
+
 ## License
 This project is open source and licensed under the MIT license. See the LICENSE file for more information.
