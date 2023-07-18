@@ -25,7 +25,7 @@ Our framework offers various calibration metrics for a holistic evaluation of yo
 - **ECE Frequency based formulation**
 - **Brier Score Loss** (Note: for both binary and multiclass, the brier score loss is bounded in [0,1]).
 
-Together, these measures provide a complete understanding of your model's calibration and help to make targeted modifications to improve the model. Our framework is open-sourced and available on GitHub for the community. It works directly with any model's outputs, making it agnostic to any Machine Learning and Deep Learning libraries. 
+Together, these measures provide a complete understanding of your model's calibration and help to make targeted modifications to improve the model. Our framework directly with any model's outputs, making it agnostic to any Machine Learning and Deep Learning framework. 
 
 In addition, we report the Brier Score Loss, ECE accuracy-based, and ECE frequency-based metrics.
 
