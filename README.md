@@ -67,7 +67,7 @@ Once the object classes_scores is created:
 ```python
 # Compute all the metrics based on 15 bins with equal-width
 results, _ = calibrationdiagnosis(classes_scores, strategy = 15, adaptive = False)
-# Or, compute all the metrics based on automatic monothonic sweep method for identifying the right number of bins 
+# Or, compute all the metrics based on automatic monotonic sweep method for identifying the right number of bins 
 results, _ = calibrationdiagnosis(classes_scores, adaptive = True)
 
 results = {
