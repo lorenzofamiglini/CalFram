@@ -29,9 +29,26 @@ Together, these measures provide a complete understanding of your model's calibr
 
 ## Installation
 
-```bash
-pip install calibrationframework
-```
+1. Clone the repository:
+   ```bash
+   git clone https://github.com/lorenzofamiglini/CalFram.git
+   ```
+
+2. Change to the project directory:
+   ```bash
+   cd CalFram
+   ```
+
+3. (Optional) Create and activate a virtual environment:
+   ```bash
+   python -m venv venv
+   source venv/bin/activate  # On Windows, use `venv\Scripts\activate`
+   ```
+
+4. Install the required dependencies:
+   ```bash
+   pip install -r requirements.txt
+   ```
 
 ## Example
 ```python
