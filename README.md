@@ -51,83 +51,84 @@ Together, these measures provide a complete understanding of your model's calibr
    ```
 
 ## Example
+
 ```python
-from calfram.calibrationframework import select_probability, calibrationdiagnosis
+from calfram.calibration_framework import CalibrationFramework
 
 # Your model predictions and actual values
-y_pred = ... # shape: (n, 1)
-y_true = ... # shape: (n, 1)
-y_prob = ... # shape: (n, c), where c is the number of classes 
+y_pred = ...  # shape: (n, 1)
+y_true = ...  # shape: (n, 1)
+y_prob = ...  # shape: (n, c), where c is the number of classes 
 
-classes_scores = select_probability(y_test, y_prob, y_pred)
-classes_scores = {
-    'class_0': {
-        'proba': np.array([]),  # The class probabilities for the given class as a 2D numpy array
-        'y': np.array([]),  # The true labels for the given class as a 1D numpy array
-        'y_one_hot_nclass': np.array([]),  # The true labels in one-hot encoding format as a 2D numpy array
-        'y_prob_one_hotnclass': np.array([]),  # The predicted probabilities in one-hot encoding format as a 2D numpy array
-        'y_pred_one_hotnclass': np.array([]),  # The predicted labels in one-hot encoding format as a 2D numpy array
-    },
-    'class_1': {
-        'proba': np.array([]),  # The class probabilities for the given class as a 2D numpy array
-        'y': np.array([]),  # The true labels for the given class as a 1D numpy array
-        'y_one_hot_nclass': np.array([]),  # The true labels in one-hot encoding format as a 2D numpy array
-        'y_prob_one_hotnclass': np.array([]),  # The predicted probabilities in one-hot encoding format as a 2D numpy array
-        'y_pred_one_hotnclass': np.array([]),  # The predicted labels in one-hot encoding format as a 2D numpy array
-    },
-    # ...
-    # The same keys and subkeys would be repeated for each class
-}
-```
+# Create an instance of CalibrationFramework
+cf = CalibrationFramework()
 
-Once the object classes_scores is created: 
-```python
+# Prepare data for calibration analysis
+classes_scores = cf.select_probability(y_true, y_prob, y_pred)
+
 # Compute all the metrics based on 15 bins with equal-width
-results, _ = calibrationdiagnosis(classes_scores, strategy = 15, adaptive = False)
+measures, binning_dict = cf.calibrationdiagnosis(classes_scores, strategy=15, adaptive=False)
 # Or, compute all the metrics based on automatic monotonic sweep method for identifying the right number of bins 
-results, _ = calibrationdiagnosis(classes_scores, adaptive = True)
+measures, binning_dict = cf.calibrationdiagnosis(classes_scores, adaptive=True)
 
-results = {
+# The 'measures' dictionary contains the following structure for each class:
+measures = {
     'class_0': { 
-        'ece_acc': np.array([]),  # Expected Calibration Error for accuracy for class '0'
-        'ece_fp': np.array([]),  # Expected Calibration Error for freq positives for class '0'
-        'ec_g': np.array([]),  # A measure of global Estimated Calibration Index for class '0'
-        'ec_under': np.array([]),  # Estimated Calibration Index for under-confident predictions for class '0'
-        'under_fr': np.array([]),  # Relative frequency of under-confident predictions for class '0'
-        'ec_over': np.array([]),  #  Estimated Calibration Index for over-confident predictions for class '0'
-        'over_fr': np.array([]),  # Relative frequency of over-confident predictions for class '0'
-        'ec_underconf': np.array([]),  # A measure of under-confidence across all predictions for class '0'
-        'ec_overconf': np.array([]),  # A measure of over-confidence across all predictions for class '0'
-        'ec_dir': np.array([]),  # A measure of the general direction of miscalibration for class '0'
-        'brier_loss': np.array([]),  # Brier score loss for class '0'
-        'over_pts': np.array([]),  # Points that represent over-confident predictions for class '0'
-        'under_pts': np.array([]),  # Points that represent under-confident predictions for class '0'
-        'ec_l_all': np.array([]),  # All local Estimated Calibration measures for class '0'
-        'where': np.array([]),  # An array indicating where each bin falls for class '0'
-        'relative-freq': np.array([]),  # The relative frequencies of the samples falling into each bin for class '0'
-        'x': np.array([]),  # The mean predicted confidence of each bin for class '0'
-        'y': np.array([]),  # The estimated probability or actual accuracy of each bin for class '0'
+        'ece_acc': float,  # Expected Calibration Error for accuracy for class '0'
+        'ece_fp': float,  # Expected Calibration Error for freq positives for class '0'
+        'ec_g': float,  # A measure of global Estimated Calibration Index for class '0'
+        'ec_under': np.ndarray,  # Estimated Calibration Index for under-confident predictions for class '0'
+        'under_fr': np.ndarray,  # Relative frequency of under-confident predictions for class '0'
+        'ec_over': np.ndarray,  # Estimated Calibration Index for over-confident predictions for class '0'
+        'over_fr': np.ndarray,  # Relative frequency of over-confident predictions for class '0'
+        'ec_underconf': float,  # A measure of under-confidence across all predictions for class '0'
+        'ec_overconf': float,  # A measure of over-confidence across all predictions for class '0'
+        'ec_dir': float,  # A measure of the general direction of miscalibration for class '0'
+        'brier_loss': float,  # Brier score loss for class '0'
+        'over_pts': np.ndarray,  # Points that represent over-confident predictions for class '0'
+        'under_pts': np.ndarray,  # Points that represent under-confident predictions for class '0'
+        'ec_l_all': np.ndarray,  # All local Estimated Calibration measures for class '0'
+        'where': np.ndarray,  # An array indicating where each bin falls for class '0'
+        'relative-freq': np.ndarray,  # The relative frequencies of the samples falling into each bin for class '0'
+        'x': np.ndarray,  # The mean predicted confidence of each bin for class '0'
+        'y': np.ndarray,  # The estimated probability or actual accuracy of each bin for class '0'
     },
     'class_1': {
-        'ece_acc': np.array([]),  # Expected Calibration Error for accuracy for class '1'
-        # ... Same as above, but for class '1'
+        # ... Same structure as above, but for class '1'
     },
-    # ... The same keys would be repeated for each class
+    # ... The same structure would be repeated for each class
 }
 
-```
-In contrast, for general overall measure without dividing per class: 
-```python
-from calfram.calibrationframework import classwise_calibration
+# For general overall measure without dividing per class:
+class_wise_metrics = cf.classwise_calibration(measures)
 
-results_cw = classwise_calibration(results)
-results_cw = {'ec_g': np.array([]), # ECI_global
- 'ec_dir': np.array([]), #ECI_balance
- 'ece_freq': np.array([]), #ECE based on freq. of positive
- 'ece_acc': np.array([]), #ECE based on Accuracy
- 'ec_underconf': np.array([]), #ECI global for the underconfident area
- 'ec_overconf': np.array([]), #ECI global for the overconfident area
- 'brierloss': np.array([])} #Brier Loss cw bounded in 0,1
+class_wise_metrics = {
+    'ec_g': float,  # ECI_global
+    'ec_dir': float,  # ECI_balance
+    'ece_freq': float,  # ECE based on freq. of positive
+    'ece_acc': float,  # ECE based on Accuracy
+    'ec_underconf': float,  # ECI global for the underconfident area
+    'ec_overconf': float,  # ECI global for the overconfident area
+    'brierloss': float  # Brier Loss cw bounded in 0,1
+}
+
+# Generate reliability plot
+cf.reliabilityplot(classes_scores, strategy=15, split=False)
+```
+
+## Visualization
+
+To generate a reliability plot:
+
+```python
+import matplotlib.pyplot as plt
+
+plt.figure(figsize=(10, 10))
+cf.reliabilityplot(classes_scores, strategy=15, split=False)
+plt.title("Reliability Plot")
+plt.xlabel("Mean Predicted Value")
+plt.ylabel("Fraction of Positives")
+plt.show()
 ```
 
 ## Contributing
@@ -148,6 +149,7 @@ If you find this project useful in your research, please consider citing:
   publisher={},
   date={30.09 - 5.10}
 }
+```
 
 ## License
 This project is open source and licensed under the MIT license. See the LICENSE file for more information.
