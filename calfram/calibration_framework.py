@@ -191,12 +191,11 @@ class CalibrationFramework:
 
                 max_height_distance: NDArray[np.float64] = self.h_triangle_safe(max_pts, tilde)
                 
-                # Fix: Handle division by zero
                 with np.errstate(divide='ignore', invalid='ignore'):
                     pts_distance_norm: NDArray[np.float64] = pts_distance / max_height_distance
                     pts_distance_norm = np.nan_to_num(pts_distance_norm, nan=0.0, posinf=1.0, neginf=0.0)
                 
-                where_are: List[str] = self.underbelow_line(new_pts[1:])  # Exclude the first point
+                where_are: List[str] = self.underbelow_line(new_pts[1:])  
 
                 mask_left: NDArray[np.bool_] = np.array([w == 'left' for w in where_are])
                 mask_right: NDArray[np.bool_] = np.array([w == 'right' for w in where_are])
@@ -292,16 +291,12 @@ class CalibrationFramework:
                 # Degenerate triangle - points are collinear
                 # Return distance from point to line
                 if ab > 1e-10:
-                    # Use cross product formula for distance from point to line
-                    # Distance = ||(c - a) x (b - a)|| / ||b - a||
                     cross = np.cross(c - a, b - a)
                     h = abs(cross) / ab if not isinstance(cross, np.ndarray) else np.linalg.norm(cross) / ab
                 else:
                     h = 0.0
             else:
-                # Valid triangle - use Heron's formula
                 s: float = (ab + ac + bc) / 2
-                # Ensure non-negative value under sqrt
                 area_sq = s * (s - ab) * (s - ac) * (s - bc)
                 if area_sq < 0:
                     area_sq = 0  # Handle numerical errors
