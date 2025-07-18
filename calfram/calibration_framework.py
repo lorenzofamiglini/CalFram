@@ -212,8 +212,8 @@ class CalibrationFramework:
                     below_dist: NDArray[np.float64] = pts_distance_norm[mask_right]
                     up_pts: NDArray[np.float64] = new_pts[1:][mask_left]
                     below_pts: NDArray[np.float64] = new_pts[1:][mask_right]
-                    up_weight: NDArray[np.float64] = bins_dict['binfr'][mask_left] if len(bins_dict['binfr']) > np.sum(mask_left) else np.array([])
-                    below_weight: NDArray[np.float64] = bins_dict['binfr'][mask_right] if len(bins_dict['binfr']) > np.sum(mask_right) else np.array([])
+                    up_weight: NDArray[np.float64] = bins_dict['binfr'][mask_left] if len(bins_dict['binfr']) >= np.sum(mask_left) else np.array([])
+                    below_weight: NDArray[np.float64] = bins_dict['binfr'][mask_right] if len(bins_dict['binfr']) >= np.sum(mask_right) else np.array([])
 
                     # Fix: Safe weighted average calculations
                     if len(bins_dict['binfr']) > 0 and np.sum(bins_dict['binfr']) > 0:
@@ -412,10 +412,11 @@ class CalibrationFramework:
 
     @staticmethod
     def underbelow_line(pts: NDArray[np.float64]) -> List[str]:
-        return ['lie' if idx == 0 else 
+        return [ 
                 'left' if (1 - 0) * (pt[1] - 0) - (pt[0] - 0) * (1 - 0) > 0 else 
                 'right' if (1 - 0) * (pt[1] - 0) - (pt[0] - 0) * (1 - 0) < 0 else 
-                'lie' for idx, pt in enumerate(pts)]
+                'lie' for idx, pt in enumerate(pts)
+                ]
 
     @staticmethod
     def check_idx(pts: NDArray[np.float64]) -> List[int]:
