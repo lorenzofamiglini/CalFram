@@ -70,6 +70,9 @@ classes_scores = cf.select_probability(y_true, y_prob, y_pred)
 measures, binning_dict = cf.calibrationdiagnosis(classes_scores, strategy=15, adaptive=False)
 # Or, compute all the metrics based on automatic monotonic sweep method for identifying the right number of bins 
 measures, binning_dict = cf.calibrationdiagnosis(classes_scores, adaptive=True)
+# If the probabilities have many ties (e.g. they are rounded to a grid, with large blocks at 0 and 1), add tie_safe=True:
+# tied probabilities are never split across bins, so the result does not depend on the order of the rows (see PATCH_NOTES.md)
+measures, binning_dict = cf.calibrationdiagnosis(classes_scores, adaptive=True, tie_safe=True)
 
 # The 'measures' dictionary contains the following structure for each class:
 measures = {

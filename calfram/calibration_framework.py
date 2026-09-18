@@ -29,7 +29,37 @@ class CalibrationFramework:
         b: int = self.monotonic_sweep_calibration(binary_data, len(Y_probs))
         return min(b, len(np.unique(Y_probs)))
 
-    def binning_schema(self, prob: NDArray[np.float64], Y: NDArray[np.int64], method: Union[int, str] = 15, ndim: Union[int, None] = 1, adaptive: bool = False) -> Dict[str, Union[NDArray[np.float64], NDArray[np.int64], float]]:
+    def monotonic_sweep_calibration_tie_safe(self, cum_counts: NDArray[np.int64], cum_positives: NDArray[np.float64]) -> NDArray[np.int64]:
+        """
+        Monotonic sweep that never splits a block of tied scores.
+
+        cum_counts and cum_positives are the cumulative number of samples and of positives over the distinct
+        scores in increasing order, both starting with 0. The bins checked for each b are the ones of
+        compute_tie_safe_cuts, so they only depend on the counts per distinct score and not on the order of
+        the rows. Returns the cuts of the last monotonic binning (no cut stands for a single bin). With
+        all-distinct scores the bins, and therefore the selected b, are those of monotonic_sweep_calibration.
+        """
+        n: int = int(cum_counts[-1])
+        n_unique: int = len(cum_counts) - 1
+        best_cuts: NDArray[np.int64] = np.array([], dtype=np.int64)
+        b: int = 2
+        while b <= n:
+            cuts: NDArray[np.int64] = self.compute_tie_safe_cuts(cum_counts, b)
+            idx: NDArray[np.int64] = np.concatenate([[0], cuts, [n_unique]])
+            bin_heights: NDArray[np.float64] = np.diff(cum_positives[idx]) / np.diff(cum_counts[idx])
+            if not np.all(bin_heights[:-1] <= bin_heights[1:]):  # Same check as is_monotonic
+                break
+            best_cuts = cuts
+            if len(cuts) + 1 >= n_unique:
+                break  # One bin per distinct score already: nothing left to refine
+            if len(cuts) < b - 1:
+                # Fewer cuts than the b - 1 allowed (tied blocks took the place of several bins): every
+                # larger b with the same n // b gives these same bins, skip them
+                b = n // (n // b)
+            b += 1
+        return best_cuts
+
+    def binning_schema(self, prob: NDArray[np.float64], Y: NDArray[np.int64], method: Union[int, str] = 15, ndim: Union[int, None] = 1, adaptive: bool = False, tie_safe: bool = False) -> Dict[str, Union[NDArray[np.float64], NDArray[np.int64], float]]:
         if ndim is not None:
             prob = prob[:, ndim]
         else:
@@ -37,9 +67,11 @@ class CalibrationFramework:
 
         n_classes: int = len(np.unique(Y))
 
-        if adaptive:
+        if adaptive and not tie_safe:
             b: int = self.monotonic_sweep_calibration_multiclass(prob, Y, n_classes)
             b = min(b, len(np.unique(prob)))
+        elif adaptive:
+            b = None  # tie_safe: the sweep below returns the bins themselves, not only their number
         else:
             if not isinstance(method, (int, str)):
                 raise ValueError("Please provide an int or str object for selecting the number of bins or select adaptive = True for monotonic sweep.")
@@ -52,6 +84,7 @@ class CalibrationFramework:
         
         unique_probs = sorted(set([data[0] for data in binary_data]))
         n_unique = len(unique_probs)
+        per_value: bool = False  # True when there is one bin per unique probability value
         
         if n_unique < 2:
             warnings.warn(f"Only {n_unique} unique probability values found. Creating artificial bins.")
@@ -62,6 +95,19 @@ class CalibrationFramework:
         elif isinstance(b, int) and n_unique < b:
             warnings.warn(f"Only {n_unique} unique probability values found, using these instead of {b} bins.")
             bin_edges = np.array(unique_probs)
+            per_value = True
+        elif tie_safe and (adaptive or isinstance(b, int)):
+            # Bins made of whole unique values: a block of tied probabilities is never split and no value
+            # lies on an edge, so the result depends neither on the order of the rows nor on np.digitize
+            # being left- or right-closed
+            unique_values, inverse, counts = np.unique(prob, return_inverse=True, return_counts=True)
+            positives = np.bincount(inverse.ravel(), weights=(np.ravel(Y) == 1), minlength=n_unique)
+            cum_counts = np.concatenate([[0], np.cumsum(counts)])
+            if adaptive:
+                cuts = self.monotonic_sweep_calibration_tie_safe(cum_counts, np.concatenate([[0.0], np.cumsum(positives)]))
+            else:
+                cuts = self.compute_tie_safe_cuts(cum_counts, b)
+            bin_edges = self.tie_safe_bin_edges(unique_values, cuts)
         else:
             # Use quantile-based binning for better distribution
             if isinstance(b, int):
@@ -69,11 +115,16 @@ class CalibrationFramework:
                 bin_edges = np.unique(bin_edges)  # Remove duplicates
             else:
                 bin_edges = np.array(unique_probs)
+                per_value = True
         
         if bin_edges[0] > 0:
             bin_edges = np.concatenate([[0.0], bin_edges])
         if bin_edges[-1] < 1:
             bin_edges = np.concatenate([bin_edges, [1.0]])
+        elif per_value:
+            # np.digitize only gets the inner edges: without a closing edge the largest value (1.0) would
+            # not be one of them and would share the bin of the second largest value
+            bin_edges = np.concatenate([bin_edges, [bin_edges[-1]]])
         
         binids: NDArray[np.int64] = np.digitize(prob, bin_edges[1:-1])
         
@@ -96,14 +147,14 @@ class CalibrationFramework:
             'binfr': relative_freq_bin[non_empty]
         }
 
-    def calibrationcurve(self, y_true: NDArray[np.int64], y_prob: NDArray[np.float64], strategy: Union[int, str] = 10, undersampling: bool = False, adaptive: bool = False) -> Tuple[NDArray[np.float64], NDArray[np.float64], Dict[str, Union[NDArray[np.float64], NDArray[np.int64], float]]]:
+    def calibrationcurve(self, y_true: NDArray[np.int64], y_prob: NDArray[np.float64], strategy: Union[int, str] = 10, undersampling: bool = False, adaptive: bool = False, tie_safe: bool = False) -> Tuple[NDArray[np.float64], NDArray[np.float64], Dict[str, Union[NDArray[np.float64], NDArray[np.int64], float]]]:
         np.random.seed(123)
 
         labels: NDArray[np.int64] = np.unique(y_true)
         if len(labels) > 2:
             raise ValueError(f"Only binary classification is supported. Provided labels {labels}. For Multiclass use 1 vs All Approach.")
 
-        bins_dict: Dict[str, Union[NDArray[np.float64], NDArray[np.int64], float]] = self.binning_schema(y_prob, y_true, method=strategy, ndim=1, adaptive=adaptive)
+        bins_dict: Dict[str, Union[NDArray[np.float64], NDArray[np.int64], float]] = self.binning_schema(y_prob, y_true, method=strategy, ndim=1, adaptive=adaptive, tie_safe=tie_safe)
         
         if y_prob.ndim == 1:
             prob_values = y_prob
@@ -168,13 +219,13 @@ class CalibrationFramework:
 
         return final_dict
 
-    def calibrationdiagnosis(self, classes_scores: Dict[str, Dict[str, NDArray[np.float64]]], strategy: Union[int, str] = 'doane', undersampling: bool = False, adaptive: bool =False) -> Tuple[Dict[str, Dict[str, Union[float, NDArray[np.float64]]]], Dict[str, Dict[str, Union[NDArray[np.float64], NDArray[np.int64], float]]]]:
+    def calibrationdiagnosis(self, classes_scores: Dict[str, Dict[str, NDArray[np.float64]]], strategy: Union[int, str] = 'doane', undersampling: bool = False, adaptive: bool =False, tie_safe: bool = False) -> Tuple[Dict[str, Dict[str, Union[float, NDArray[np.float64]]]], Dict[str, Dict[str, Union[NDArray[np.float64], NDArray[np.int64], float]]]]:
         measures: Dict[str, Dict[str, Union[float, NDArray[np.float64]]]] = {}
         binning_dict: Dict[str, Dict[str, Union[NDArray[np.float64], NDArray[np.int64], float]]] = {}
         
         for i in classes_scores.keys():
             try:
-                y, x, bins_dict = self.calibrationcurve(classes_scores[i]['y'], classes_scores[i]['proba'], strategy=strategy, undersampling=undersampling, adaptive=adaptive)
+                y, x, bins_dict = self.calibrationcurve(classes_scores[i]['y'], classes_scores[i]['proba'], strategy=strategy, undersampling=undersampling, adaptive=adaptive, tie_safe=tie_safe)
                 new_pts: NDArray[np.float64] = self.end_points(x, y)
 
                 tilde: NDArray[np.float64] = self.add_tilde(new_pts)
@@ -363,12 +414,12 @@ class CalibrationFramework:
             'brierloss': classes_brier
         }
 
-    def reliabilityplot(self, classes_scores: Dict[str, Dict[str, NDArray[np.float64]]], strategy: Union[int, str] = 'doane', split: bool = True, undersampling: bool = False) -> None:
+    def reliabilityplot(self, classes_scores: Dict[str, Dict[str, NDArray[np.float64]]], strategy: Union[int, str] = 'doane', split: bool = True, undersampling: bool = False, adaptive: bool = False, tie_safe: bool = False) -> None:
         marker_list: List[str] = ['o', 'v', '^', '<', '>', '1', '2', '3', '4', 's']
         plt.figure(figsize=(10, 10))
         for idx, (i, class_score) in enumerate(classes_scores.items()):
             try:
-                prob_true, prob_pred, _ = self.calibrationcurve(class_score['y'], class_score['proba'], strategy=strategy, undersampling=undersampling)
+                prob_true, prob_pred, _ = self.calibrationcurve(class_score['y'], class_score['proba'], strategy=strategy, undersampling=undersampling, adaptive=adaptive, tie_safe=tie_safe)
 
                 plt.rcParams["font.weight"] = "bold"
                 plt.rcParams["axes.labelweight"] = "bold"
@@ -499,6 +550,65 @@ class CalibrationFramework:
                 bin_heights.append(0.0)
                 
         return bin_heights
+
+    @staticmethod
+    def compute_tie_safe_cuts(cum_counts: NDArray[np.int64], b: int) -> NDArray[np.int64]:
+        """
+        Equal-mass bins made of whole distinct scores.
+
+        Same rule as compute_equal_mass_bin_heights (bins of n // b samples, the last one takes the
+        remainder), but a bin can only end where a block of tied scores ends. The distinct scores are taken
+        in increasing order and a bin is filled until it holds at least n // b samples. A distinct score
+        that holds n // b samples or more alone is a bin of its own: the unfinished bin before it, like
+        the unfinished bin at the end, joins the previous bin. So every bin holds at least n // b samples,
+        a block larger than that takes the place of several bins (there can be fewer than b bins), and with
+        all-distinct scores the bins are exactly those of compute_equal_mass_bin_heights.
+
+        cum_counts is the cumulative number of samples over the distinct scores in increasing order,
+        starting with 0. A returned cut k separates the distinct scores k - 1 and k.
+        """
+        n: int = int(cum_counts[-1])
+        n_unique: int = len(cum_counts) - 1
+        b = min(b, n)
+        bin_size: int = max(1, n // b)
+
+        # No tie in the way (always the case with all-distinct scores): plain equal-mass cuts
+        targets: NDArray[np.int64] = bin_size * np.arange(1, b)
+        cuts_arr: NDArray[np.int64] = np.searchsorted(cum_counts, targets, side='left')
+        if np.array_equal(cum_counts[cuts_arr], targets):
+            return cuts_arr.astype(np.int64)
+
+        heavy: NDArray[np.int64] = np.flatnonzero(np.diff(cum_counts) >= bin_size)  # Distinct scores that fill a bin alone
+        cuts: List[int] = []
+        start: int = 0
+
+        while len(cuts) < b - 1:
+            k: int = int(np.searchsorted(cum_counts, cum_counts[start] + bin_size, side='left'))
+            next_heavy: int = int(np.searchsorted(heavy, start, side='right'))
+            if cuts and next_heavy < len(heavy) and heavy[next_heavy] < k:
+                # Unfinished bin before a heavy block: it joins the previous bin and the block starts a new one
+                start = int(heavy[next_heavy])
+                cuts[-1] = start
+                continue
+            if k >= n_unique:
+                break
+            cuts.append(k)
+            start = k
+
+        if cuts and n - cum_counts[cuts[-1]] < bin_size:
+            cuts.pop()
+
+        return np.array(cuts, dtype=np.int64)
+
+    @staticmethod
+    def tie_safe_bin_edges(unique_probs: NDArray[np.float64], cuts: NDArray[np.int64]) -> NDArray[np.float64]:
+        """Bin edges half-way between the distinct scores that each cut separates, so that no score lies on an edge."""
+        lower: NDArray[np.float64] = unique_probs[cuts - 1]
+        upper: NDArray[np.float64] = unique_probs[cuts]
+        inner: NDArray[np.float64] = (lower + upper) / 2
+        # Two adjacent floats have no value in between: fall back on the upper one, which np.digitize (left-closed) sends to the upper bin
+        inner = np.where((inner > lower) & (inner < upper), inner, upper)
+        return np.concatenate([[min(0.0, unique_probs[0])], inner, [max(1.0, unique_probs[-1])]])
 
     @staticmethod
     def is_monotonic(bin_heights: List[float]) -> bool:
