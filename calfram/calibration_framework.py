@@ -36,26 +36,23 @@ class CalibrationFramework:
         cum_counts and cum_positives are the cumulative number of samples and of positives over the distinct
         scores in increasing order, both starting with 0. The bins checked for each b are the ones of
         compute_tie_safe_cuts, so they only depend on the counts per distinct score and not on the order of
-        the rows. Returns the cuts of the last monotonic binning (no cut stands for a single bin). With
-        all-distinct scores the bins, and therefore the selected b, are those of monotonic_sweep_calibration.
+        the rows. Returns the cuts of the last monotonic binning (no cut stands for a single bin), as checked
+        by is_monotonic_tie_safe. With all-distinct scores the bins, and therefore the selected b, are those
+        of monotonic_sweep_calibration.
         """
         n: int = int(cum_counts[-1])
         n_unique: int = len(cum_counts) - 1
+        ties: bool = n_unique < n
         best_cuts: NDArray[np.int64] = np.array([], dtype=np.int64)
         b: int = 2
         while b <= n:
             cuts: NDArray[np.int64] = self.compute_tie_safe_cuts(cum_counts, b)
             idx: NDArray[np.int64] = np.concatenate([[0], cuts, [n_unique]])
-            bin_heights: NDArray[np.float64] = np.diff(cum_positives[idx]) / np.diff(cum_counts[idx])
-            if not np.all(bin_heights[:-1] <= bin_heights[1:]):  # Same check as is_monotonic
+            if not self.is_monotonic_tie_safe(np.diff(cum_counts[idx]), np.diff(cum_positives[idx]), robust=ties):
                 break
             best_cuts = cuts
             if len(cuts) + 1 >= n_unique:
                 break  # One bin per distinct score already: nothing left to refine
-            if len(cuts) < b - 1:
-                # Fewer cuts than the b - 1 allowed (tied blocks took the place of several bins): every
-                # larger b with the same n // b gives these same bins, skip them
-                b = n // (n // b)
             b += 1
         return best_cuts
 
@@ -95,7 +92,9 @@ class CalibrationFramework:
         elif isinstance(b, int) and n_unique < b:
             warnings.warn(f"Only {n_unique} unique probability values found, using these instead of {b} bins.")
             bin_edges = np.array(unique_probs)
-            per_value = True
+            # Only with tie_safe: the default keeps the bins of the previous versions, where the two largest
+            # values share a bin when 1.0 is one of them
+            per_value = tie_safe
         elif tie_safe and (adaptive or isinstance(b, int)):
             # Bins made of whole unique values: a block of tied probabilities is never split and no value
             # lies on an edge, so the result depends neither on the order of the rows nor on np.digitize
@@ -556,47 +555,49 @@ class CalibrationFramework:
         """
         Equal-mass bins made of whole distinct scores.
 
-        Same rule as compute_equal_mass_bin_heights (bins of n // b samples, the last one takes the
-        remainder), but a bin can only end where a block of tied scores ends. The distinct scores are taken
-        in increasing order and a bin is filled until it holds at least n // b samples. A distinct score
-        that holds n // b samples or more alone is a bin of its own: the unfinished bin before it, like
-        the unfinished bin at the end, joins the previous bin. So every bin holds at least n // b samples,
-        a block larger than that takes the place of several bins (there can be fewer than b bins), and with
-        all-distinct scores the bins are exactly those of compute_equal_mass_bin_heights.
+        Same targets as compute_equal_mass_bin_heights (a cut after every n // b samples, the last bin takes
+        the remainder), but a bin can only end where a block of tied scores ends:
+        1. each target k * (n // b), k = 1..b-1, is moved to the end of a tied block nearest to it (the
+           targets that meet at the same place give one cut);
+        2. a distinct score that holds n // b samples or more alone (a heavy block) gets a cut on both sides;
+        3. a bin with fewer than half of n // b samples joins its smaller neighbour, and while there are
+           more than b bins the smallest one does too (so a heavy block is a bin of its own unless a sliver
+           next to it has no other neighbour).
+        So a block is never split, no bin is a sliver, there are at most b bins (fewer when blocks take the
+        place of several bins), and with all-distinct scores the bins are exactly those of
+        compute_equal_mass_bin_heights.
 
         cum_counts is the cumulative number of samples over the distinct scores in increasing order,
         starting with 0. A returned cut k separates the distinct scores k - 1 and k.
         """
         n: int = int(cum_counts[-1])
         n_unique: int = len(cum_counts) - 1
-        b = min(b, n)
+        b = max(1, min(b, n))
         bin_size: int = max(1, n // b)
 
-        # No tie in the way (always the case with all-distinct scores): plain equal-mass cuts
         targets: NDArray[np.int64] = bin_size * np.arange(1, b)
-        cuts_arr: NDArray[np.int64] = np.searchsorted(cum_counts, targets, side='left')
-        if np.array_equal(cum_counts[cuts_arr], targets):
-            return cuts_arr.astype(np.int64)
+        if n_unique == n:
+            return targets.astype(np.int64)  # All-distinct scores: plain equal-mass cuts
 
-        heavy: NDArray[np.int64] = np.flatnonzero(np.diff(cum_counts) >= bin_size)  # Distinct scores that fill a bin alone
-        cuts: List[int] = []
-        start: int = 0
+        # 1. The block end nearest to each target (the upper one when both are as near)
+        upper: NDArray[np.int64] = np.searchsorted(cum_counts, targets, side='left')
+        lower: NDArray[np.int64] = np.maximum(upper - 1, 0)
+        nearest: NDArray[np.int64] = np.where(targets - cum_counts[lower] < cum_counts[upper] - targets, lower, upper)
+        # 2. Heavy blocks start and end a bin
+        heavy: NDArray[np.int64] = np.flatnonzero(np.diff(cum_counts) >= bin_size)
+        cuts_arr = np.unique(np.concatenate([nearest, heavy, heavy + 1]))
+        cuts: List[int] = cuts_arr[(cuts_arr > 0) & (cuts_arr < n_unique)].tolist()
 
-        while len(cuts) < b - 1:
-            k: int = int(np.searchsorted(cum_counts, cum_counts[start] + bin_size, side='left'))
-            next_heavy: int = int(np.searchsorted(heavy, start, side='right'))
-            if cuts and next_heavy < len(heavy) and heavy[next_heavy] < k:
-                # Unfinished bin before a heavy block: it joins the previous bin and the block starts a new one
-                start = int(heavy[next_heavy])
-                cuts[-1] = start
-                continue
-            if k >= n_unique:
+        # 3. Slivers, and bins beyond b, join their smaller neighbour
+        while cuts:
+            sizes: NDArray[np.int64] = np.diff(cum_counts[[0] + cuts + [n_unique]])
+            i: int = int(np.argmin(sizes))  # The first one when several are as small
+            if 2 * sizes[i] >= bin_size and len(sizes) <= b:
                 break
-            cuts.append(k)
-            start = k
-
-        if cuts and n - cum_counts[cuts[-1]] < bin_size:
-            cuts.pop()
+            if i == 0 or (i < len(sizes) - 1 and sizes[i + 1] < sizes[i - 1]):
+                del cuts[i]  # Joins the next bin
+            else:
+                del cuts[i - 1]  # Joins the previous bin
 
         return np.array(cuts, dtype=np.int64)
 
@@ -613,3 +614,22 @@ class CalibrationFramework:
     @staticmethod
     def is_monotonic(bin_heights: List[float]) -> bool:
         return all(bin_heights[i] <= bin_heights[i + 1] for i in range(len(bin_heights) - 1))
+
+    @staticmethod
+    def is_monotonic_tie_safe(counts: NDArray[np.int64], positives: NDArray[np.float64], robust: bool = False) -> bool:
+        """
+        Same check as is_monotonic on the bin heights positives / counts. With robust=True, a decrease between
+        two bins whose sizes differ by a factor of 2 or more only counts if it survives changing one label in
+        the smaller bin: next to a large tied block (for example the block at 0.00 of a one-vs-rest column) a
+        small bin that holds one positive less than expected would otherwise stop the sweep. Bins of similar
+        size are checked exactly as by is_monotonic.
+        """
+        c0, c1 = counts[:-1], counts[1:]
+        p0, p1 = positives[:-1], positives[1:]
+        decrease: NDArray[np.bool_] = p0 * c1 > p1 * c0
+        if robust and np.any(decrease):
+            unequal: NDArray[np.bool_] = np.maximum(c0, c1) >= 2 * np.minimum(c0, c1)
+            # One positive more in the smaller bin on the right, or one less in the smaller bin on the left
+            survives: NDArray[np.bool_] = np.where(c0 >= c1, p0 * c1 > (p1 + 1) * c0, (p0 - 1) * c1 > p1 * c0)
+            decrease &= ~unequal | survives
+        return not np.any(decrease)

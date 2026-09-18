@@ -91,7 +91,14 @@ class TestPerValueBinning(unittest.TestCase):
         with warnings.catch_warnings():
             warnings.simplefilter("ignore")
             bins_dict = self.cf.binning_schema(proba, y, method=15)
-        self.assertEqual(len(bins_dict['binfr']), 4)
+            bins_dict_t = self.cf.binning_schema(proba, y, method=15, tie_safe=True)
+        # Default: the bins of the previous versions, where 0.6 and 1.0 share a bin
+        np.testing.assert_array_equal(bins_dict['binids'], np.digitize(score, [0.3, 0.6]))
+        self.assertEqual(len(bins_dict['binfr']), 3)
+        # tie_safe: one bin per value
+        self.assertEqual(len(bins_dict_t['binfr']), 4)
+        for ids in bins_of_values(score, bins_dict_t['binids']).values():
+            self.assertEqual(len(ids), 1)
 
     def test_unchanged_when_one_is_not_a_value(self):
         # The previous rule already gave one bin per value when the largest value is below 1: same output
@@ -133,8 +140,12 @@ class TestTieSafeCuts(unittest.TestCase):
         np.testing.assert_array_equal(cuts, [1, 5])  # {50}, {8, 7, 5, 5}, {25}
         # With 2 bins of 50 the block of 50 is one bin and all the rest the other
         np.testing.assert_array_equal(self.cf.compute_tie_safe_cuts(self.cum(counts), 2), [1])
-        # No previous bin to join: the 3 samples before the block of 60 stay with it (and 17 < 20 join the last bin)
-        np.testing.assert_array_equal(self.cf.compute_tie_safe_cuts(self.cum([3, 60, 20, 17]), 5), [2])  # {3, 60}, {20, 17}
+        # No previous bin to join: the 3 samples before the block of 60 stay with it; 17 >= 20 / 2 is a bin
+        np.testing.assert_array_equal(self.cf.compute_tie_safe_cuts(self.cum([3, 60, 20, 17]), 5), [2, 3])  # {3, 60}, {20}, {17}
+        # A heavy block at the end is a bin of its own even when the targets are used up: the single sample
+        # before it joins the previous bin
+        np.testing.assert_array_equal(self.cf.compute_tie_safe_cuts(self.cum([4, 1, 4]), 2), [2])  # {4, 1}, {4}
+        np.testing.assert_array_equal(self.cf.compute_tie_safe_cuts(self.cum([2, 1, 1, 4, 4, 3, 3, 2, 4]), 5), [3, 4, 6, 8])
 
     def test_small_last_run_joins_the_previous_bin(self):
         counts = [10, 10, 10, 2]
@@ -143,7 +154,7 @@ class TestTieSafeCuts(unittest.TestCase):
         counts = [90, 4, 3, 3]
         np.testing.assert_array_equal(self.cf.compute_tie_safe_cuts(self.cum(counts), 2), [])  # 10 samples cannot make a bin of 50
 
-    def test_every_bin_has_the_nominal_size(self):
+    def test_no_sliver_and_at_most_b_bins(self):
         rng = np.random.default_rng(3)
         for _ in range(50):
             n_unique = int(rng.integers(2, 40))
@@ -157,7 +168,35 @@ class TestTieSafeCuts(unittest.TestCase):
                 self.assertLessEqual(len(sizes), b)
                 self.assertTrue(np.all(np.diff(cuts) > 0) and np.all((cuts > 0) & (cuts < n_unique)))
                 if len(sizes) > 1:
-                    self.assertGreaterEqual(sizes.min(), n // b)
+                    self.assertGreaterEqual(2 * sizes.min(), n // max(b, 1))  # No bin below half the nominal size
+
+    def test_b_bins_on_a_grid_without_heavy_block(self):
+        # Ties everywhere but no block near n // b: every b gives b bins close to n // b (no overshoot that
+        # piles up and leaves b - 1 bins, or a single bin for b = 2)
+        rng = np.random.default_rng(8)
+        score = np.round(rng.random(20000), 2)
+        counts = np.unique(score, return_counts=True)[1]
+        self.assertLess(counts.max(), 0.015 * len(score))
+        cum_counts = self.cum(counts)
+        for b in (2, 3, 4, 5, 10, 15, 20):
+            sizes = np.diff(cum_counts[np.concatenate([[0], self.cf.compute_tie_safe_cuts(cum_counts, b), [len(counts)]])])
+            self.assertEqual(len(sizes), b)
+            self.assertLess(np.max(np.abs(sizes - len(score) / b)), counts.max())  # Each cut within one block of its target
+
+    def test_a_few_small_ties_keep_the_bins(self):
+        # Continuous scores rounded to 4 decimals (ties of a few rows): the same b bins as the exact scores
+        for seed in range(4):
+            score, _ = continuous_scores(4000, 0.0, seed)
+            for s in (score, np.round(score, 4)):
+                counts = np.unique(s, return_counts=True)[1]
+                cuts = self.cf.compute_tie_safe_cuts(self.cum(counts), 16)
+                sizes = np.diff(self.cum(counts)[np.concatenate([[0], cuts, [len(counts)]])])
+                self.assertEqual(len(sizes), 16)
+                self.assertLessEqual(np.max(np.abs(sizes - 250)), counts.max())
+
+    def test_zero_or_negative_b_gives_one_bin(self):
+        for b in (0, -3):
+            self.assertEqual(len(self.cf.compute_tie_safe_cuts(self.cum([5, 5, 5]), b)), 0)
 
     def test_all_distinct_scores_give_the_equal_mass_bins(self):
         rng = np.random.default_rng(4)
@@ -196,7 +235,10 @@ class TestTieSafeAdaptive(unittest.TestCase):
                 n_bins = len(bins_dict['binfr'])
                 self.assertGreaterEqual(n_bins, 10)
                 self.assertLessEqual(n_bins, len(np.unique(score)))
-                self.assertTrue(np.all(np.diff(measures['y']) >= 0))  # The selected bins are monotonic
+                # The selected bins are monotonic, up to one label between bins of very different size
+                counts = np.bincount(bins_dict['binids'])
+                positives = np.bincount(bins_dict['binids'], weights=y)
+                self.assertTrue(self.cf.is_monotonic_tie_safe(counts, positives, robust=True))
 
     def test_ec_dir_has_the_sign_of_the_known_miscalibration(self):
         for n in (3000, 20000):
@@ -300,30 +342,44 @@ class TestTieSafeAdaptive(unittest.TestCase):
                 cuts = self.cf.monotonic_sweep_calibration_tie_safe(np.arange(n + 1), cum_positives)
                 self.assertEqual(len(cuts) + 1, b)
 
-    def test_skipping_b_does_not_change_the_sweep(self):
-        # The sweep skips the b that are known to give the same bins: compare with a sweep that checks every b
-        rng = np.random.default_rng(7)
-        n_long = 0
-        for trial in range(200):
-            n_unique = int(rng.integers(2, 25))
-            counts = np.ones(n_unique, dtype=int) if trial % 4 == 0 else rng.integers(1, 40, n_unique)
-            positives = rng.binomial(counts, np.sort(rng.random(n_unique)))  # Mostly monotonic: the sweep goes far
-            cum_counts = np.concatenate([[0], np.cumsum(counts)])
-            cum_positives = np.concatenate([[0.0], np.cumsum(positives)])
-            n = int(cum_counts[-1])
+    def test_robust_monotonicity_check(self):
+        counts = np.array([2700, 140])
+        # 1/2700 > 0/140 is a decrease, but one positive more in the small bin removes it
+        self.assertFalse(self.cf.is_monotonic_tie_safe(counts, np.array([1.0, 0.0])))
+        self.assertTrue(self.cf.is_monotonic_tie_safe(counts, np.array([1.0, 0.0]), robust=True))
+        # A decrease that survives one label still counts
+        self.assertFalse(self.cf.is_monotonic_tie_safe(counts, np.array([500.0, 10.0]), robust=True))
+        self.assertFalse(self.cf.is_monotonic_tie_safe(counts[::-1], np.array([10.0, 1.0]), robust=True))
+        # Bins of similar size: exactly is_monotonic
+        rng = np.random.default_rng(9)
+        for _ in range(500):
+            counts = rng.integers(50, 99, 6)
+            positives = rng.binomial(counts, 0.3).astype(float)
+            expected = self.cf.is_monotonic((positives / counts).tolist())
+            self.assertEqual(self.cf.is_monotonic_tie_safe(counts, positives), expected)
+            self.assertEqual(self.cf.is_monotonic_tie_safe(counts, positives, robust=True), expected)
 
-            expected = np.array([], dtype=np.int64)
-            for b in range(2, n + 1):
-                cuts = self.cf.compute_tie_safe_cuts(cum_counts, b)
-                idx = np.concatenate([[0], cuts, [n_unique]])
-                if not self.cf.is_monotonic((np.diff(cum_positives[idx]) / np.diff(cum_counts[idx])).tolist()):
-                    break
-                expected = cuts
-            n_long += len(expected) + 1 > np.sqrt(n)
+    def test_dominant_block_at_zero(self):
+        # One-vs-rest-like column: 95% of the rows at 0.00 with a handful of positives. A single label in the
+        # small bin next to the block must not stop the sweep at 2-3 bins
+        n_bins = []
+        for seed in range(40):
+            score, y = quantised_scores(3000, 1.0, seed, p_zero=0.95, p_one=0.01)
+            proba = np.column_stack([1 - score, score])
+            n_bins.append(len(self.cf.binning_schema(proba, y, adaptive=True, tie_safe=True)['binfr']))
+        self.assertLessEqual(sum(b <= 3 for b in n_bins), 2)
+        self.assertGreaterEqual(np.median(n_bins), 5)
 
-            cuts = self.cf.monotonic_sweep_calibration_tie_safe(cum_counts, cum_positives)
-            np.testing.assert_array_equal(cuts, expected)
-        self.assertGreater(n_long, 20)  # Enough sweeps went beyond sqrt(n) bins, where several b share the same n // b
+        # Flipping the one positive of the block at 0.00 barely changes the bins
+        score, y = quantised_scores(3000, 1.0, 0, p_zero=0.95, p_one=0.01)
+        self.assertEqual(y[score == 0.0].sum(), 1)
+        flipped = y.copy()
+        flipped[(score == 0.0) & (y == 1)] = 0
+        proba = np.column_stack([1 - score, score])
+        n_before = len(self.cf.binning_schema(proba, y, adaptive=True, tie_safe=True)['binfr'])
+        n_after = len(self.cf.binning_schema(proba, flipped, adaptive=True, tie_safe=True)['binfr'])
+        self.assertGreaterEqual(min(n_before, n_after), 5)
+        self.assertLessEqual(abs(n_before - n_after), 2)
 
     # calibrationdiagnosis really uses the tie-safe bins
     def test_diagnosis_is_computed_on_the_tie_safe_bins(self):
@@ -367,7 +423,7 @@ class TestTieSafeAdaptive(unittest.TestCase):
             reference, _ = self.cf.calibrationdiagnosis(classes_scores, strategy='doane')  # One bin per value
         n_bins = [len(binning_dict[key]['binfr']) for key in binning_dict]
         self.assertGreaterEqual(np.median(n_bins), 4)
-        self.assertGreaterEqual(min(n_bins), 2)
+        self.assertGreaterEqual(min(n_bins), 3)
         class_wise = self.cf.classwise_calibration(measures)
         self.assertGreater(class_wise['ec_dir'], 0.05)
         self.assertAlmostEqual(class_wise['ec_dir'], self.cf.classwise_calibration(reference)['ec_dir'], delta=0.06)
@@ -392,11 +448,21 @@ class TestTieSafeAdaptive(unittest.TestCase):
             _, bins_dict = diagnose(self.cf, score, y, strategy=b, tie_safe=True)
             counts = np.bincount(bins_dict['binids'])
             self.assertLessEqual(len(counts), b)
-            self.assertGreaterEqual(counts.min(), len(score) // b)
+            self.assertGreaterEqual(2 * counts.min(), len(score) // b)
+        self.assertEqual(len(diagnose(self.cf, score, y, strategy=2, tie_safe=True)[1]['binfr']), 2)
         # On all-distinct scores: b bins of n // b samples
         score, y = continuous_scores(3000, 0.0, 0)
         _, bins_dict = diagnose(self.cf, score, y, strategy=15, tie_safe=True)
         np.testing.assert_array_equal(np.bincount(bins_dict['binids']), [200] * 15)
+
+    def test_strategy_zero(self):
+        # Invalid but accepted by the default path (one bin): tie_safe must not fail on it
+        score, y = quantised_scores(2000, 1.0, 6)
+        measures, bins_dict = diagnose(self.cf, score, y, strategy=0)
+        measures_t, bins_dict_t = diagnose(self.cf, score, y, strategy=0, tie_safe=True)
+        self.assertEqual(len(bins_dict['binfr']), 1)
+        self.assertEqual(len(bins_dict_t['binfr']), 1)
+        self.assertAlmostEqual(measures_t['ec_g'], measures['ec_g'], places=12)
 
     def test_few_unique_values(self):
         y = np.array([0, 1] * 50)
