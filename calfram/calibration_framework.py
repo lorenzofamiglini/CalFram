@@ -231,7 +231,12 @@ class CalibrationFramework:
           enter, so a single small bin alone on one side counts as much as the rest of the data on the other.
         - 'mass': sum over all bins of w_b * s_b * d_b, with w_b the bin's share of the data (binfr), s_b = +1 for
           over-forecast bins, -1 for under-forecast bins and 0 on the diagonal. |ec_dir| <= 1 - ec_g, with
-          equality when all bins are on one side. The old value is then also returned as 'ec_dir_sides'.
+          equality when all bins are on one side. The old value is then also returned as 'ec_dir_sides', together
+          with 'ec_underconf_mass' and 'ec_overconf_mass': the sums of w_b * d_b over the under- and over-forecast
+          bins (each side's share of 1 - ec_g, 0 for an empty side), so that ec_dir = ec_overconf_mass -
+          ec_underconf_mass and ec_underconf_mass + ec_overconf_mass = 1 - ec_g up to the bins on the diagonal.
+          Unlike ec_underconf / ec_overconf (1 - the mean distance within one side, unchanged) they are
+          miscalibration shares: 0 is best.
 
         See PATCH_NOTES.md.
         """
@@ -271,7 +276,7 @@ class CalibrationFramework:
                         'relative-freq': np.nan, 'x': np.nan, 'y': np.nan
                     }
                     if balance == 'mass':
-                        dict_msr['ec_dir_sides'] = np.nan
+                        dict_msr.update(ec_dir_sides=np.nan, ec_underconf_mass=np.nan, ec_overconf_mass=np.nan)
                 else:
                     up_dist: NDArray[np.float64] = pts_distance_norm[mask_left]
                     below_dist: NDArray[np.float64] = pts_distance_norm[mask_right]
@@ -316,9 +321,13 @@ class CalibrationFramework:
                         weights: NDArray[np.float64] = np.asarray(bins_dict['binfr'], dtype=float)
                         side_sign: NDArray[np.float64] = mask_right.astype(float) - mask_left.astype(float)
                         if np.sum(weights) <= 0:
-                            fcc_dir = np.nan
+                            fcc_dir = fcc_under_mass = fcc_over_mass = np.nan
                         else:
-                            fcc_dir = float(np.sum(weights * side_sign * pts_distance_norm) / np.sum(weights))
+                            share: NDArray[np.float64] = weights * pts_distance_norm / np.sum(weights)
+                            # each side's share of 1 - ec_g (0 for an empty side); over - under = the mass balance
+                            fcc_under_mass: float = float(np.sum(share[mask_left]))
+                            fcc_over_mass: float = float(np.sum(share[mask_right]))
+                            fcc_dir = float(np.sum(side_sign * share))
 
                     ece: float = self.compute_eces(classes_scores[i]['y_one_hot_nclass'], classes_scores[i]['y_prob_one_hotnclass'],
                                     classes_scores[i]['y_pred_one_hotnclass'], bins_dict['binids'],
@@ -336,6 +345,8 @@ class CalibrationFramework:
                     }
                     if balance == 'mass':
                         dict_msr['ec_dir_sides'] = fcc_dir_sides
+                        dict_msr['ec_underconf_mass'] = fcc_under_mass
+                        dict_msr['ec_overconf_mass'] = fcc_over_mass
             except Exception as e:
                 warnings.warn(f"Error processing class {i}: {str(e)}")
                 dict_msr = {
@@ -345,7 +356,7 @@ class CalibrationFramework:
                     'relative-freq': np.nan, 'x': np.nan, 'y': np.nan, 'brier_loss': np.nan
                 }
                 if balance == 'mass':
-                    dict_msr['ec_dir_sides'] = np.nan
+                    dict_msr.update(ec_dir_sides=np.nan, ec_underconf_mass=np.nan, ec_overconf_mass=np.nan)
 
             measures[str(i)] = dict_msr
             binning_dict[str(i)] = bins_dict

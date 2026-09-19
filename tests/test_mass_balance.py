@@ -41,7 +41,7 @@ class TestMassBalance(unittest.TestCase):
         self.assertEqual(set(default), set(sides))
         self.assertEqual(default['ec_dir'], sides['ec_dir'])
         # the mass option changes ec_dir only, and keeps the old value under ec_dir_sides
-        self.assertEqual(set(mass) - set(default), {'ec_dir_sides'})
+        self.assertEqual(set(mass) - set(default), {'ec_dir_sides', 'ec_underconf_mass', 'ec_overconf_mass'})
         self.assertEqual(mass['ec_dir_sides'], default['ec_dir'])
         for key in ('ec_g', 'ece_fp', 'ec_underconf', 'ec_overconf'):
             self.assertEqual(mass[key], default[key])
@@ -83,6 +83,25 @@ class TestMassBalance(unittest.TestCase):
                 d = 1 - m['ec_l_all']
                 s = (m['where'] == 'right').astype(float) - (m['where'] == 'left').astype(float)
                 self.assertAlmostEqual(m['ec_dir'], np.sum(w * s * d), places=12)
+
+    def test_side_shares(self):
+        # ec_overconf_mass - ec_underconf_mass = ec_dir, and the two add up to 1 - ec_g
+        rng = np.random.default_rng(1)
+        for seed in range(20):
+            gen = quantised_scores if seed % 2 else continuous_scores
+            score, y = gen(int(rng.integers(200, 3000)), rng.normal(0, 1.5), seed)
+            for kwargs in (dict(strategy=10), dict(adaptive=True, tie_safe=True), dict(strategy=15, tie_safe=True)):
+                m, _ = diagnose(self.cf, score, y, balance='mass', **kwargs)
+                self.assertAlmostEqual(m['ec_overconf_mass'] - m['ec_underconf_mass'], m['ec_dir'], places=12)
+                self.assertAlmostEqual(m['ec_overconf_mass'] + m['ec_underconf_mass'], 1 - m['ec_g'], places=9)
+                self.assertGreaterEqual(min(m['ec_overconf_mass'], m['ec_underconf_mass']), 0)
+        # an empty side contributes 0, and the within-side measures are unchanged
+        score, y = blocks([(0.2, 100, 10), (0.5, 100, 30), (0.8, 100, 60)])
+        m, _ = diagnose(self.cf, score, y, strategy=10, balance='mass')
+        self.assertEqual(m['ec_underconf_mass'], 0.0)
+        self.assertAlmostEqual(m['ec_overconf_mass'], m['ec_dir'], places=12)
+        self.assertTrue(np.isnan(m['ec_underconf']))
+        self.assertAlmostEqual(m['ec_overconf'], 1 - np.mean([0.1 / 0.8, 0.2 / 0.5, 0.2 / 0.8]), places=12)
 
     def test_identity_when_one_side(self):
         over = [(0.2, 100, 10), (0.5, 100, 30), (0.8, 100, 60)]      # observed frequency below every score

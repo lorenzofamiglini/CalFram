@@ -418,3 +418,9 @@ Small, separate commits; each item says whether default outputs change.
   measured: `ec_g` = 1, ECEs computed, `ec_underconf` / `ec_overconf` and the `'sides'` `ec_dir` NaN (no side),
   the `'mass'` balance 0 (so the mass balance is NaN only when there are no bin weights, not "in the same case as
   the old one" as stated above). Default outputs change only for bins within 1e-12 of the diagonal.
+- **Side measures by mass.** `ec_underconf` / `ec_overconf` stay as they are (1 - the mean distance within one
+  side, ignoring how much data that side holds). With `balance='mass'` the output also has `ec_underconf_mass` and
+  `ec_overconf_mass`: the sums of w_b * d_b over the under- and over-forecast bins, i.e. each side's share of
+  1 - ECI_g (0 for an empty side, 0 is best; note the orientation is the opposite of `ec_underconf`). Then
+  `ec_dir = ec_overconf_mass - ec_underconf_mass` and `ec_underconf_mass + ec_overconf_mass = 1 - ECI_g` (up to bins
+  within 1e-12 of the diagonal). `classwise_calibration` does not average them. Default outputs do not change.

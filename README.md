@@ -94,6 +94,8 @@ measures = {
         'ec_overconf': float,  # A measure of over-confidence across all predictions for class '0'
         'ec_dir': float,  # A measure of the general direction of miscalibration for class '0' (> 0 over-forecast; see balance)
         # 'ec_dir_sides': float,  # only with balance='mass': the default (per-side) ec_dir
+        # 'ec_underconf_mass': float,  # only with balance='mass': sum of w * d over the under-forecast bins (0 is best)
+        # 'ec_overconf_mass': float,  # only with balance='mass': same over the over-forecast bins; ec_dir = over - under
         'brier_loss': float,  # Brier score loss for class '0'
         'over_pts': np.ndarray,  # Points that represent over-confident predictions for class '0'
         'under_pts': np.ndarray,  # Points that represent under-confident predictions for class '0'
