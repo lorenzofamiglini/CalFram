@@ -400,3 +400,9 @@ Small, separate commits; each item says whether default outputs change.
   `pyproject.toml` gets a `[tool.pytest.ini_options]` section (`testpaths = ["tests"]`, `pythonpath = ["."]`), so
   a plain `pytest` from the repository root runs every test; before, `pytest tests/` skipped `test.py`. The
   commands above that name `tests/test.py` refer to the file before the rename.
+- **Exact distances.** `calibrationdiagnosis` computed the normalised distance d_b of each bin with triangle
+  heights (Heron's formula, `h_triangle_safe`) of the point and of the farthest point in its column. That ratio is
+  exactly `|y - x| / max(x, 1 - x)`, now computed directly by `normalised_distance`. On 320000 random points the
+  two agree to 3e-10, except where a bin has the x of the previous one within 1e-6 (typically a first bin at x = 0),
+  where Heron's formula with its 1e-10 clamp was off by up to 3.5e-6. Default outputs change only at that level.
+  `h_triangle_safe` is kept, unused.

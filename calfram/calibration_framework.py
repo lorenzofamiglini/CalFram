@@ -245,23 +245,11 @@ class CalibrationFramework:
                 y, x, bins_dict = self.calibrationcurve(classes_scores[i]['y'], classes_scores[i]['proba'], strategy=strategy, undersampling=undersampling, adaptive=adaptive, tie_safe=tie_safe)
                 new_pts: NDArray[np.float64] = self.end_points(x, y)
 
-                tilde: NDArray[np.float64] = self.add_tilde(new_pts)
-                
-                # Fix: Safe triangle height calculation
-                pts_distance: NDArray[np.float64] = self.h_triangle_safe(new_pts, tilde)
-                max_pts: NDArray[np.float64] = new_pts.copy()
-
-                for pt in range(1, len(new_pts)):
-                    if new_pts[pt][0] <= 0.5:
-                        max_pts[pt] = [new_pts[pt][0], 1]
-                    else:
-                        max_pts[pt] = [new_pts[pt][0], 0]
-
-                max_height_distance: NDArray[np.float64] = self.h_triangle_safe(max_pts, tilde)
-                
-                with np.errstate(divide='ignore', invalid='ignore'):
-                    pts_distance_norm: NDArray[np.float64] = pts_distance / max_height_distance
-                    pts_distance_norm = np.nan_to_num(pts_distance_norm, nan=0.0, posinf=1.0, neginf=0.0)
+                # Normalised distance of each bin to the diagonal: |y - x| / max(x, 1 - x), i.e. the distance of
+                # (x, y) to the diagonal divided by that of the farthest point in the same column, (x, 1) or (x, 0).
+                # This is what the triangle heights of h_triangle_safe computed (to 3e-10 on random points), without
+                # Heron's formula, which lost up to ~4e-6 when two consecutive bins had (almost) the same x.
+                pts_distance_norm: NDArray[np.float64] = self.normalised_distance(x, y)
                 
                 where_are: List[str] = self.underbelow_line(new_pts[1:])  
 
@@ -357,8 +345,17 @@ class CalibrationFramework:
 
         return measures, binning_dict
 
+    @staticmethod
+    def normalised_distance(x: NDArray[np.float64], y: NDArray[np.float64]) -> NDArray[np.float64]:
+        """Distance of the points (x, y) to the diagonal divided by the largest possible one at the same x:
+        |y - x| / max(x, 1 - x), in [0, 1]. 1 - this is the local ECI of each bin."""
+        x = np.asarray(x, dtype=float)
+        y = np.asarray(y, dtype=float)
+        return np.abs(y - x) / np.maximum(x, 1 - x)
+
     def h_triangle_safe(self, new_pts: NDArray[np.float64], tilde: NDArray[np.float64]) -> NDArray[np.float64]:
-        """Safe version of h_triangle that handles degenerate cases"""
+        """Safe version of h_triangle that handles degenerate cases. No longer used by calibrationdiagnosis, which
+        computes the same normalised distances exactly with normalised_distance; kept for backward compatibility."""
         height_list: List[float] = []
         for idx in range(1, len(new_pts)):
             a, b, c = tilde[idx-1], tilde[idx], new_pts[idx]
