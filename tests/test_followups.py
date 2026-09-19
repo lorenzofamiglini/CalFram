@@ -44,5 +44,32 @@ class TestNormalisedDistance(unittest.TestCase):
                                        rtol=0, atol=1e-9)
 
 
+class TestWeightCheck(unittest.TestCase):
+
+    def test_mismatch_is_reported(self):
+        cf = CalibrationFramework()
+        original = cf.binning_schema
+
+        def one_weight_too_many(*args, **kwargs):
+            bins = original(*args, **kwargs)
+            bins['binfr'] = np.r_[bins['binfr'], 0.0]
+            return bins
+
+        cf.binning_schema = one_weight_too_many
+        score, y = blocks([(0.2, 100, 10), (0.7, 100, 80)])
+        proba = np.column_stack([1 - score, score])
+        classes_scores = cf.select_probability(y, proba, (score >= 0.5).astype(int))
+        with warnings.catch_warnings(record=True) as caught:
+            warnings.simplefilter("always")
+            measures, _ = cf.calibrationdiagnosis(classes_scores, strategy=10)
+        self.assertTrue(any("2 calibration points" in str(w.message) for w in caught))
+        self.assertTrue(np.isnan(measures['1']['ec_g']))
+
+    def test_aligned_weights(self):
+        score, y = blocks([(0.2, 100, 10), (0.7, 100, 80)])
+        m, bins = diagnose(CalibrationFramework(), score, y, strategy=10)
+        self.assertEqual(len(bins['binfr']), len(m['where']))
+
+
 if __name__ == '__main__':
     unittest.main()

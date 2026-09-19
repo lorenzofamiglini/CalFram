@@ -406,3 +406,7 @@ Small, separate commits; each item says whether default outputs change.
   two agree to 3e-10, except where a bin has the x of the previous one within 1e-6 (typically a first bin at x = 0),
   where Heron's formula with its 1e-10 clamp was off by up to 3.5e-6. Default outputs change only at that level.
   `h_triangle_safe` is kept, unused.
+- **Weight check.** `calibrationdiagnosis` took the side weights as `binfr[mask] if len(binfr) >= sum(mask) else
+  []`; that condition could not guard anything (a length mismatch makes the boolean indexing raise first). It is
+  now an explicit check that `binfr` has one weight per calibration point, raising a `ValueError` (reported as the
+  usual per-class warning with NaN measures). Default outputs do not change.

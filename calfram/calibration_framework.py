@@ -253,6 +253,11 @@ class CalibrationFramework:
                 
                 where_are: List[str] = self.underbelow_line(new_pts[1:])  
 
+                # binfr (non-empty bins of binning_schema) and the curve points (non-empty bins of calibrationcurve)
+                # must describe the same bins, in the same order; the weights below index binfr with masks on the points
+                if len(where_are) > 0 and len(bins_dict['binfr']) != len(where_are):
+                    raise ValueError(f"{len(bins_dict['binfr'])} bin weights for {len(where_are)} calibration points.")
+
                 mask_left: NDArray[np.bool_] = np.array([w == 'left' for w in where_are])
                 mask_right: NDArray[np.bool_] = np.array([w == 'right' for w in where_are])
             
@@ -270,8 +275,8 @@ class CalibrationFramework:
                     below_dist: NDArray[np.float64] = pts_distance_norm[mask_right]
                     up_pts: NDArray[np.float64] = new_pts[1:][mask_left]
                     below_pts: NDArray[np.float64] = new_pts[1:][mask_right]
-                    up_weight: NDArray[np.float64] = bins_dict['binfr'][mask_left] if len(bins_dict['binfr']) >= np.sum(mask_left) else np.array([])
-                    below_weight: NDArray[np.float64] = bins_dict['binfr'][mask_right] if len(bins_dict['binfr']) >= np.sum(mask_right) else np.array([])
+                    up_weight: NDArray[np.float64] = bins_dict['binfr'][mask_left]
+                    below_weight: NDArray[np.float64] = bins_dict['binfr'][mask_right]
 
                     # Fix: Safe weighted average calculations
                     if len(bins_dict['binfr']) > 0 and np.sum(bins_dict['binfr']) > 0:
@@ -308,7 +313,7 @@ class CalibrationFramework:
                         fcc_dir_sides: float = fcc_dir
                         weights: NDArray[np.float64] = np.asarray(bins_dict['binfr'], dtype=float)
                         side_sign: NDArray[np.float64] = mask_right.astype(float) - mask_left.astype(float)
-                        if np.isnan(fcc_dir_sides) or len(weights) != len(pts_distance_norm) or np.sum(weights) <= 0:
+                        if np.isnan(fcc_dir_sides) or np.sum(weights) <= 0:
                             fcc_dir = np.nan
                         else:
                             fcc_dir = float(np.sum(weights * side_sign * pts_distance_norm) / np.sum(weights))
