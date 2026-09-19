@@ -6,6 +6,17 @@ from sklearn.metrics import brier_score_loss
 import matplotlib.pyplot as plt
 import warnings
 
+# str strategies: the rules of np.histogram_bin_edges, or 'unique' (one bin per unique score)
+HISTOGRAM_RULES = ('auto', 'fd', 'doane', 'scott', 'stone', 'rice', 'sturges', 'sqrt')
+STR_STRATEGIES = HISTOGRAM_RULES + ('unique',)
+
+
+def check_strategy(strategy: Union[int, str]) -> None:
+    if isinstance(strategy, str) and strategy not in STR_STRATEGIES:
+        raise ValueError(f"Unknown strategy {strategy!r}: use an int (number of quantile bins), 'unique' (one bin per "
+                         f"unique score) or one of the np.histogram_bin_edges rules {HISTOGRAM_RULES}.")
+
+
 class CalibrationFramework:
     def __init__(self) -> None:
         self.ohe: OneHotEncoder = OneHotEncoder(sparse_output=False)
@@ -72,6 +83,7 @@ class CalibrationFramework:
         else:
             if not isinstance(method, (int, str)):
                 raise ValueError("Please provide an int or str object for selecting the number of bins or select adaptive = True for monotonic sweep.")
+            check_strategy(method)
             b = method
 
         if prob.ndim == 1:
@@ -112,10 +124,15 @@ class CalibrationFramework:
             if isinstance(b, int):
                 bin_edges = np.quantile(prob, np.linspace(0, 1, min(b + 1, n_unique)))
                 bin_edges = np.unique(bin_edges)  # Remove duplicates
-            else:
+            elif b == 'unique':
                 bin_edges = np.array(unique_probs)
                 per_value = True
-        
+            else:
+                # A rule of np.histogram_bin_edges: equal-width bins between the smallest and the largest score, with
+                # np.histogram's assignment (left-closed bins, the last one closed); no padding to [0, 1]
+                bin_edges = np.histogram_bin_edges(prob, bins=b)
+                return self.nonempty_bins(bin_edges, np.digitize(prob, bin_edges[1:-1]), len(prob))
+
         if bin_edges[0] > 0:
             bin_edges = np.concatenate([[0.0], bin_edges])
         if bin_edges[-1] < 1:
@@ -126,9 +143,12 @@ class CalibrationFramework:
             bin_edges = np.concatenate([bin_edges, [bin_edges[-1]]])
         
         binids: NDArray[np.int64] = np.digitize(prob, bin_edges[1:-1])
-        
+        return self.nonempty_bins(bin_edges, binids, len(prob))
+
+    @staticmethod
+    def nonempty_bins(bin_edges: NDArray[np.float64], binids: NDArray[np.int64], n: int) -> Dict[str, Union[NDArray[np.float64], NDArray[np.int64], float]]:
         bin_counts = np.bincount(binids, minlength=len(bin_edges) - 1)
-        relative_freq_bin: NDArray[np.float64] = bin_counts / len(prob)
+        relative_freq_bin: NDArray[np.float64] = bin_counts / n
         
         # Remove empty bins
         non_empty = bin_counts > 0
@@ -242,6 +262,7 @@ class CalibrationFramework:
         """
         if balance not in ('sides', 'mass'):
             raise ValueError(f"balance must be 'sides' or 'mass', got {balance!r}.")
+        check_strategy(strategy)  # here, so that an unknown name raises instead of becoming a warning per class
         measures: Dict[str, Dict[str, Union[float, NDArray[np.float64]]]] = {}
         binning_dict: Dict[str, Dict[str, Union[NDArray[np.float64], NDArray[np.int64], float]]] = {}
         

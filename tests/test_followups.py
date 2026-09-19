@@ -4,8 +4,9 @@ import warnings
 
 import numpy as np
 
-from calfram.calibration_framework import CalibrationFramework
+from calfram.calibration_framework import HISTOGRAM_RULES, CalibrationFramework
 from tests.test_mass_balance import blocks, diagnose
+from tests.test_tie_safe import continuous_scores, quantised_scores
 
 
 def triangle_distance(cf, x, y):
@@ -104,6 +105,60 @@ class TestOnTheDiagonal(unittest.TestCase):
         self.assertAlmostEqual(m['ec_dir_sides'], np.mean(d), places=12)
         self.assertAlmostEqual(m['ec_dir'], np.sum(d) / 3, places=12)
         self.assertAlmostEqual(m['ec_dir'], 1 - m['ec_g'], places=12)
+
+
+class TestStrStrategies(unittest.TestCase):
+
+    def setUp(self):
+        self.cf = CalibrationFramework()
+
+    def binning(self, score, y, method, **kwargs):
+        with warnings.catch_warnings():
+            warnings.simplefilter("ignore")
+            return self.cf.binning_schema(np.column_stack([1 - score, score]), y, method=method, **kwargs)
+
+    def test_histogram_rules(self):
+        for seed, n in ((0, 300), (1, 2000), (2, 20000)):
+            score, y = continuous_scores(n, 0.5, seed)
+            for rule in HISTOGRAM_RULES:
+                counts, edges = np.histogram(score, bins=rule)
+                bins = self.binning(score, y, rule)
+                # the same bins as np.histogram: same number of edges, same assignment, empty bins dropped
+                np.testing.assert_array_equal(np.bincount(bins['binids'], minlength=len(edges) - 1), counts)
+                self.assertLessEqual(bins['binids'].max(), len(edges) - 2)
+                np.testing.assert_array_equal(bins['bins'], edges[:-1][counts > 0])
+                np.testing.assert_allclose(bins['binfr'], counts[counts > 0] / n)
+                # tie_safe does not apply to fixed-width edges (a tied value always goes to one bin)
+                bins_t = self.binning(score, y, rule, tie_safe=True)
+                np.testing.assert_array_equal(bins_t['binids'], bins['binids'])
+
+    def test_default_is_doane(self):
+        score, y = continuous_scores(4000, 1.0, 0)
+        counts, _ = np.histogram(score, bins='doane')
+        m, bins = diagnose(self.cf, score, y)
+        self.assertEqual(len(bins['binfr']), np.sum(counts > 0))
+        self.assertEqual(len(m['x']), np.sum(counts > 0))
+        self.assertLess(len(bins['binfr']), 30)    # before: one bin per row (4000)
+
+    def test_unique(self):
+        for gen, n in ((continuous_scores, 500), (quantised_scores, 5000)):
+            score, y = gen(n, 0.5, 0)
+            values, inverse, counts = np.unique(score, return_inverse=True, return_counts=True)
+            bins = self.binning(score, y, 'unique')
+            # one bin per unique value, 1.0 included, in order
+            self.assertEqual(len(bins['binfr']), len(values))
+            np.testing.assert_allclose(bins['binfr'], counts / n)
+            order = np.unique(bins['binids'], return_inverse=True)[1]
+            np.testing.assert_array_equal(order.ravel(), inverse.ravel())
+            if gen is quantised_scores:
+                self.assertIn(1.0, values)
+
+    def test_unknown_strategy(self):
+        score, y = continuous_scores(200, 0.0, 0)
+        with self.assertRaises(ValueError):
+            self.binning(score, y, 'doan')
+        with self.assertRaises(ValueError):
+            diagnose(self.cf, score, y, strategy='per_value')
 
 
 if __name__ == '__main__':

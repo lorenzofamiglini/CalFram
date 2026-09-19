@@ -424,3 +424,30 @@ Small, separate commits; each item says whether default outputs change.
   1 - ECI_g (0 for an empty side, 0 is best; note the orientation is the opposite of `ec_underconf`). Then
   `ec_dir = ec_overconf_mass - ec_underconf_mass` and `ec_underconf_mass + ec_overconf_mass = 1 - ECI_g` (up to bins
   within 1e-12 of the diagonal). `classwise_calibration` does not average them. Default outputs do not change.
+- **String strategies (breaking).** `binning_schema` treated every string strategy as "one bin per unique score",
+  so the default `strategy='doane'` of `calibrationdiagnosis` and `reliabilityplot` was not Doane's rule; on
+  continuous scores it gave one bin per row, where the observed frequency of a bin is 0 or 1. The first versions of
+  the package passed the string to `np.histogram_bin_edges`, which is what the name means. Now:
+  - `'auto'`, `'fd'`, `'doane'`, `'scott'`, `'stone'`, `'rice'`, `'sturges'`, `'sqrt'`: the edges of
+    `np.histogram_bin_edges(scores, bins=rule)` (equal width, from the smallest to the largest score, not padded to
+    [0, 1]) and `np.histogram`'s assignment (left-closed, last bin closed); empty bins are dropped as before.
+    `tie_safe` has no effect on them (a tied value always falls in one bin).
+  - `'unique'`: the old behaviour, one bin per unique score with 1.0 in its own bin (fix A above). Bit-identical to
+    the old `'doane'` on 6000 random `binning_schema` calls (continuous, rounded to 0.1/0.01/0.001, mass at 0 and 1;
+    with and without `tie_safe`), and the same measures.
+  - any other string raises `ValueError` (also from `calibrationdiagnosis`, before the per-class loop that would
+    turn it into a warning).
+
+  In the sections above, `strategy='doane'` / "per value" / "`str` strategy" mean what is now `'unique'`.
+
+  Effect on the default output, one continuous binary dataset (logits N(0, 2), n = 4000, seed 0; score =
+  sigmoid(logit + shift); `calibrationdiagnosis(classes_scores)` with no other argument):
+
+  | shift | before: bins, ec_g, ec_dir (sides / mass), ece_fp | after: bins, ec_g, ec_dir (sides / mass), ece_fp |
+  |---|---|---|
+  | 0 (calibrated) | 4000, 0.560, -0.011 / +0.000, 0.3018 | 15, 0.973, -0.005 / +0.000, 0.0197 |
+  | +1 (over-confident) | 4000, 0.542, +0.408 / +0.210, 0.3206 | 17, 0.789, +0.211 / +0.211, 0.1482 |
+  | -1 (under-confident) | 4000, 0.552, -0.425 / -0.206, 0.3166 | 18, 0.794, -0.206 / -0.206, 0.1460 |
+
+  Migration: pass `strategy='unique'` to reproduce earlier numbers; for ECI on continuous scores prefer a named
+  rule, an `int` or `adaptive=True`.

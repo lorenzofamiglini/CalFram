@@ -57,9 +57,9 @@ class TestMassBalance(unittest.TestCase):
         # that are all negative (over-forecast, d = 1). The 3 rows flip the old balance, not the mass balance.
         base = [(0.3, 3000, 1500)]
         score, y = blocks(base)
-        m0, _ = diagnose(self.cf, score, y, strategy='doane', balance='mass')
+        m0, _ = diagnose(self.cf, score, y, strategy='unique', balance='mass')
         score, y = blocks(base + [(0.9, 3, 0)])
-        m1, bins = diagnose(self.cf, score, y, strategy='doane', balance='mass')
+        m1, bins = diagnose(self.cf, score, y, strategy='unique', balance='mass')
         self.assertEqual(len(bins['binfr']), 2)
         d_under = 0.2 / 0.7
         self.assertAlmostEqual(m0['ec_dir'], -d_under, places=6)
@@ -74,7 +74,7 @@ class TestMassBalance(unittest.TestCase):
         for seed in range(30):
             shift = rng.normal(0, 1.5)
             score, y = (quantised_scores if seed % 2 else continuous_scores)(int(rng.integers(200, 3000)), shift, seed)
-            for kwargs in (dict(strategy=10), dict(strategy='doane'), dict(adaptive=True),
+            for kwargs in (dict(strategy=10), dict(strategy='unique'), dict(adaptive=True),
                            dict(adaptive=True, tie_safe=True), dict(strategy=15, tie_safe=True)):
                 m, _ = diagnose(self.cf, score, y, balance='mass', **kwargs)
                 self.assertLessEqual(abs(m['ec_dir']), 1 - m['ec_g'] + 1e-12, (seed, kwargs))
@@ -108,19 +108,19 @@ class TestMassBalance(unittest.TestCase):
         under = [(0.2, 100, 30), (0.5, 100, 70), (0.8, 100, 95)]     # above every score
         for spec, sign in ((over, 1), (under, -1)):
             score, y = blocks(spec)
-            m, _ = diagnose(self.cf, score, y, strategy='doane', balance='mass')
+            m, _ = diagnose(self.cf, score, y, strategy='unique', balance='mass')
             self.assertTrue(np.all(m['where'] == ('right' if sign > 0 else 'left')))
             self.assertAlmostEqual(m['ec_dir'], sign * (1 - m['ec_g']), places=10)
         # a bin on the diagonal adds weight but no distance: the identity still holds
         score, y = blocks(over + [(0.25, 100, 25)])  # 0.25 is exact in binary: x == y, not off by one ulp
-        m, _ = diagnose(self.cf, score, y, strategy='doane', balance='mass')
+        m, _ = diagnose(self.cf, score, y, strategy='unique', balance='mass')
         self.assertIn('lie', m['where'])
         self.assertAlmostEqual(m['ec_dir'], 1 - m['ec_g'], places=10)
 
     def test_sign(self):
         for seed in range(3):
             for gen in (continuous_scores, quantised_scores):
-                for kwargs in (dict(strategy=10), dict(adaptive=True), dict(strategy='doane')):
+                for kwargs in (dict(strategy=10), dict(adaptive=True), dict(strategy='unique')):
                     over, _ = diagnose(self.cf, *gen(3000, 1.0, seed), balance='mass', **kwargs)
                     under, _ = diagnose(self.cf, *gen(3000, -1.0, seed), balance='mass', **kwargs)
                     self.assertGreater(over['ec_dir'], 0.02, (gen.__name__, kwargs, seed))
@@ -139,7 +139,7 @@ class TestMassBalance(unittest.TestCase):
             y = (rng.random(500) < score).astype(int)
             m, _ = diagnose(self.cf, score, y, strategy=10, balance='mass')
             results['strategy10'].append(m['ec_dir'])
-            m, _ = diagnose(self.cf, score, y, strategy='doane', balance='mass')
+            m, _ = diagnose(self.cf, score, y, strategy='unique', balance='mass')
             results['per_value_sides'].append(m['ec_dir_sides'])
             results['per_value_mass'].append(m['ec_dir'])
         for key in ('strategy10', 'per_value_mass'):
@@ -147,7 +147,7 @@ class TestMassBalance(unittest.TestCase):
             se = values.std(ddof=1) / np.sqrt(draws)
             self.assertLess(abs(values.mean()), 4 * se, key)
             self.assertLess(abs(values.mean()), 0.01, key)
-        # contrast: with one bin per value (the default str strategy on continuous scores) every bin is a single
+        # contrast: with one bin per value (strategy='unique', the old default, on continuous scores) every bin is a single
         # row, and the old balance of a perfectly calibrated model is about -0.56
         self.assertLess(np.mean(results['per_value_sides']), -0.3)
 

@@ -50,6 +50,15 @@ Together, these measures provide a complete understanding of your model's calibr
    pip install -r requirements.txt
    ```
 
+## Breaking change: string strategies
+
+`strategy='doane'` (the default of `calibrationdiagnosis` and `reliabilityplot`) used to give one bin per unique
+score whatever the string, which on continuous scores means one bin per row. A string strategy is now a rule of
+`np.histogram_bin_edges` (`'auto'`, `'fd'`, `'doane'`, `'scott'`, `'stone'`, `'rice'`, `'sturges'`, `'sqrt'`): equal-width
+bins between the smallest and the largest score, assigned as `np.histogram` does. The old behaviour is
+`strategy='unique'`; pass it to reproduce earlier results. An unknown string raises a `ValueError`. See
+PATCH_NOTES.md ("Follow-up fixes").
+
 ## Example
 
 ```python
@@ -66,8 +75,10 @@ cf = CalibrationFramework()
 # Prepare data for calibration analysis
 classes_scores = cf.select_probability(y_true, y_prob, y_pred)
 
-# Compute all the metrics based on 15 bins with equal-width
+# Compute all the metrics based on 15 equal-mass bins (quantiles of the scores)
 measures, binning_dict = cf.calibrationdiagnosis(classes_scores, strategy=15, adaptive=False)
+# Or with a np.histogram_bin_edges rule (the default is 'doane'), or 'unique' for one bin per unique score
+measures, binning_dict = cf.calibrationdiagnosis(classes_scores, strategy='doane')
 # Or, compute all the metrics based on automatic monotonic sweep method for identifying the right number of bins 
 measures, binning_dict = cf.calibrationdiagnosis(classes_scores, adaptive=True)
 # If the probabilities have many ties (e.g. they are rounded to a grid, with large blocks at 0 and 1), add tie_safe=True:

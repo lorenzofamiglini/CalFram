@@ -65,7 +65,7 @@ class TestPerValueBinning(unittest.TestCase):
         y = (rng.random(500) < score).astype(int)
         proba = np.column_stack([1 - score, score])
 
-        prob_true, prob_pred, bins_dict = self.cf.calibrationcurve(y, proba, strategy='doane')
+        prob_true, prob_pred, bins_dict = self.cf.calibrationcurve(y, proba, strategy='unique')
 
         self.assertEqual(len(bins_dict['binfr']), len(values))
         self.assertEqual(len(bins_dict['bins']), len(values))
@@ -79,7 +79,7 @@ class TestPerValueBinning(unittest.TestCase):
         score, y = quantised_scores(5000, 0.0, 0)
         self.assertEqual(score.min(), 0.0)
         self.assertEqual(score.max(), 1.0)
-        measures, bins_dict = diagnose(self.cf, score, y, strategy='doane')
+        measures, bins_dict = diagnose(self.cf, score, y, strategy='unique')
         self.assertEqual(len(bins_dict['binfr']), len(np.unique(score)))
         np.testing.assert_allclose(measures['x'], np.unique(score))
 
@@ -115,7 +115,7 @@ class TestPerValueBinning(unittest.TestCase):
             expected_binids = np.digitize(score, edges[1:-1])
             expected_counts = np.bincount(expected_binids, minlength=len(edges) - 1)
 
-            bins_dict = self.cf.binning_schema(proba, y, method='doane')
+            bins_dict = self.cf.binning_schema(proba, y, method='unique')
             np.testing.assert_array_equal(bins_dict['binids'], expected_binids)
             np.testing.assert_array_equal(bins_dict['bins'], edges[:-1][expected_counts > 0])
             np.testing.assert_array_equal(bins_dict['binfr'], (expected_counts / len(score))[expected_counts > 0])
@@ -420,7 +420,7 @@ class TestTieSafeAdaptive(unittest.TestCase):
         with warnings.catch_warnings():
             warnings.simplefilter("ignore")
             measures, binning_dict = self.cf.calibrationdiagnosis(classes_scores, adaptive=True, tie_safe=True)
-            reference, _ = self.cf.calibrationdiagnosis(classes_scores, strategy='doane')  # One bin per value
+            reference, _ = self.cf.calibrationdiagnosis(classes_scores, strategy='unique')  # One bin per value
         n_bins = [len(binning_dict[key]['binfr']) for key in binning_dict]
         self.assertGreaterEqual(np.median(n_bins), 4)
         self.assertGreaterEqual(min(n_bins), 3)
@@ -431,14 +431,14 @@ class TestTieSafeAdaptive(unittest.TestCase):
     # API
     def test_default_keeps_the_existing_behaviour(self):
         score, y = quantised_scores(3000, 1.0, 3)
-        for kwargs in (dict(adaptive=True), dict(strategy=15), dict(strategy='doane')):
+        for kwargs in (dict(adaptive=True), dict(strategy=15), dict(strategy='unique')):
             measures, bins_dict = diagnose(self.cf, score, y, **kwargs)
             measures_f, bins_dict_f = diagnose(self.cf, score, y, tie_safe=False, **kwargs)
             np.testing.assert_array_equal(bins_dict['binids'], bins_dict_f['binids'])
             self.assertEqual(measures['ec_dir'], measures_f['ec_dir'])
         # One bin per value is tie-safe already: the keyword changes nothing
-        measures, bins_dict = diagnose(self.cf, score, y, strategy='doane')
-        measures_t, bins_dict_t = diagnose(self.cf, score, y, strategy='doane', tie_safe=True)
+        measures, bins_dict = diagnose(self.cf, score, y, strategy='unique')
+        measures_t, bins_dict_t = diagnose(self.cf, score, y, strategy='unique', tie_safe=True)
         np.testing.assert_array_equal(bins_dict['binids'], bins_dict_t['binids'])
         self.assertEqual(measures['ec_dir'], measures_t['ec_dir'])
 
