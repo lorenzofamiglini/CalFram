@@ -218,7 +218,25 @@ class CalibrationFramework:
 
         return final_dict
 
-    def calibrationdiagnosis(self, classes_scores: Dict[str, Dict[str, NDArray[np.float64]]], strategy: Union[int, str] = 'doane', undersampling: bool = False, adaptive: bool =False, tie_safe: bool = False) -> Tuple[Dict[str, Dict[str, Union[float, NDArray[np.float64]]]], Dict[str, Dict[str, Union[NDArray[np.float64], NDArray[np.int64], float]]]]:
+    def calibrationdiagnosis(self, classes_scores: Dict[str, Dict[str, NDArray[np.float64]]], strategy: Union[int, str] = 'doane', undersampling: bool = False, adaptive: bool =False, tie_safe: bool = False, balance: str = 'sides') -> Tuple[Dict[str, Dict[str, Union[float, NDArray[np.float64]]]], Dict[str, Dict[str, Union[NDArray[np.float64], NDArray[np.int64], float]]]]:
+        """
+        ECI measures of each class, computed on the bins of calibrationcurve.
+
+        ec_dir (ECI_balance) is signed, positive when the model over-forecasts (mean prediction above the observed
+        frequency, points below the diagonal) and negative when it under-forecasts. `balance` selects how it is
+        computed from the normalised bin distances d_b (the same distances as ec_g):
+
+        - 'sides' (default, unchanged): mean of d_b over the over-forecast bins minus the mean over the
+          under-forecast bins, each side weighted only within itself. The share of the data on each side does not
+          enter, so a single small bin alone on one side counts as much as the rest of the data on the other.
+        - 'mass': sum over all bins of w_b * s_b * d_b, with w_b the bin's share of the data (binfr), s_b = +1 for
+          over-forecast bins, -1 for under-forecast bins and 0 on the diagonal. |ec_dir| <= 1 - ec_g, with
+          equality when all bins are on one side. The old value is then also returned as 'ec_dir_sides'.
+
+        See PATCH_NOTES.md.
+        """
+        if balance not in ('sides', 'mass'):
+            raise ValueError(f"balance must be 'sides' or 'mass', got {balance!r}.")
         measures: Dict[str, Dict[str, Union[float, NDArray[np.float64]]]] = {}
         binning_dict: Dict[str, Dict[str, Union[NDArray[np.float64], NDArray[np.int64], float]]] = {}
         
@@ -257,6 +275,8 @@ class CalibrationFramework:
                         'ec_dir': np.nan, 'over_pts': np.nan, 'under_pts': np.nan, 'ec_l_all': np.nan, 'where': np.nan,
                         'relative-freq': np.nan, 'x': np.nan, 'y': np.nan
                     }
+                    if balance == 'mass':
+                        dict_msr['ec_dir_sides'] = np.nan
                 else:
                     up_dist: NDArray[np.float64] = pts_distance_norm[mask_left]
                     below_dist: NDArray[np.float64] = pts_distance_norm[mask_right]
@@ -294,6 +314,17 @@ class CalibrationFramework:
                     else:
                         fcc_dir = np.nan
 
+                    if balance == 'mass':
+                        # Signed and weighted by the share of all data: +d_b over-forecast, -d_b under-forecast,
+                        # 0 on the diagonal. NaN in the same case as the 'sides' balance (no side with weight).
+                        fcc_dir_sides: float = fcc_dir
+                        weights: NDArray[np.float64] = np.asarray(bins_dict['binfr'], dtype=float)
+                        side_sign: NDArray[np.float64] = mask_right.astype(float) - mask_left.astype(float)
+                        if np.isnan(fcc_dir_sides) or len(weights) != len(pts_distance_norm) or np.sum(weights) <= 0:
+                            fcc_dir = np.nan
+                        else:
+                            fcc_dir = float(np.sum(weights * side_sign * pts_distance_norm) / np.sum(weights))
+
                     ece: float = self.compute_eces(classes_scores[i]['y_one_hot_nclass'], classes_scores[i]['y_prob_one_hotnclass'],
                                     classes_scores[i]['y_pred_one_hotnclass'], bins_dict['binids'],
                                     bins_dict['bins'], 'fp', int(i))
@@ -308,6 +339,8 @@ class CalibrationFramework:
                         'ec_l_all': 1-pts_distance_norm, 'where': np.array(where_are),
                         'relative-freq': bins_dict['binfr'], 'x': x, 'y': y
                     }
+                    if balance == 'mass':
+                        dict_msr['ec_dir_sides'] = fcc_dir_sides
             except Exception as e:
                 warnings.warn(f"Error processing class {i}: {str(e)}")
                 dict_msr = {
@@ -316,6 +349,8 @@ class CalibrationFramework:
                     'ec_dir': np.nan, 'over_pts': np.nan, 'under_pts': np.nan, 'ec_l_all': np.nan, 'where': np.nan,
                     'relative-freq': np.nan, 'x': np.nan, 'y': np.nan, 'brier_loss': np.nan
                 }
+                if balance == 'mass':
+                    dict_msr['ec_dir_sides'] = np.nan
 
             measures[str(i)] = dict_msr
             binning_dict[str(i)] = bins_dict

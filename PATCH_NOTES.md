@@ -303,3 +303,91 @@ PYTHONPATH=. python -m pytest tests/test.py tests/test_tie_safe.py -q
 - The `int` fallback with fewer values than bins no longer changes by default (section A).
 - The b-skipping shortcut in the sweep was removed: with global targets, b values that share `n // b` no longer
   give the same bins.
+
+# Mass-weighted ECI balance (`balance='mass'`)
+
+New keyword on `calibrationdiagnosis`, `balance='sides'` (default, unchanged) or `balance='mass'`. With `'mass'`,
+`ec_dir` is the mass-weighted balance below and the old value is also returned as `ec_dir_sides`; nothing else
+in the output changes (same bins, same `ec_g`, ECEs, ...), and `classwise_calibration` averages whichever `ec_dir`
+it is given. Without the keyword the output is identical, key for key. An unknown value raises `ValueError`.
+Test module: `tests/test_mass_balance.py`.
+
+## What the old balance measures
+
+For each bin b, with mean score x_b and observed frequency y_b, CalFram uses the normalised distance to the
+diagonal d_b = |y_b - x_b| / max(x_b, 1 - x_b) (the triangle heights of `h_triangle_safe`, divided by the height of
+the farthest point in the same column); ECI_g = 1 - sum_b w_b d_b, with w_b = `binfr`. The bins are split by
+`underbelow_line`: `'right'` (y_b < x_b, over-forecast) and `'left'` (y_b > x_b, under-forecast). Then
+
+    ec_dir = mean of d_b over 'right' bins, weighted by w_b within them
+           - mean of d_b over 'left' bins, weighted by w_b within them
+
+(one term only when a side is empty; NaN when both are). Each side is normalised by its own weight, so the share
+of the data on each side never enters: one bin holding 0.1% of the rows alone on one side weighs as much as
+the other 99.9%. Two consequences:
+
+- A tiny bin flips the sign. 3000 rows at 0.30 with observed frequency 0.50 (under-forecast, d = 0.286) give
+  -0.286; adding 3 negative rows at 0.90 (d = 1) gives **+0.714**. On a real benchmark task (99.9% of the mass
+  under-confident, 3 items in one over-forecast bin) the reported value was +0.96.
+- It is biased under perfect calibration, because which bins land on each side is itself noise and a side with
+  few, small bins counts as much as the other. Labels drawn from the scores, 1000 draws: with one bin per value
+  (the default `strategy='doane'`, which on continuous scores means one bin per row) the old balance averages
+  **-0.56** (beta(2, 5) scores) and **-0.84** (beta(0.3, 3)); with `strategy=10` it averages -0.054 at n = 200 and
+  -0.012 at n = 1000 (beta(0.3, 3)), -0.017 / -0.005 on a skewed 0.01 grid. The sign of the bias depends on the data
+  (a positive bias, mean +0.07 with a 97.5% quantile of +0.46, was seen on the benchmark).
+
+## What the new option computes
+
+    ec_dir = sum_b w_b * s_b * d_b / sum_b w_b,   s_b = +1 ('right', over-forecast), -1 ('left'), 0 ('lie')
+
+with the same d_b and w_b as ECI_g, so the sign convention is the old one (positive = over-forecast) and
+
+    |ec_dir| <= sum_b w_b d_b = 1 - ECI_g,
+
+with equality when all bins are on one side (or on the diagonal). Since s_b d_b = (x_b - y_b) / max(x_b, 1 - x_b)
+the balance is linear in the bin residuals: with bins that depend on the scores only (the `int` and `str`
+strategies) and a calibrated model, E[y_b] = x_b in every bin and the balance is exactly unbiased. It is NaN in the
+same case as the old one (no bin off the diagonal). With the adaptive sweeps the bins depend on the labels, so
+unbiasedness is not guaranteed by construction; empirically it holds within the simulation error (below).
+
+## Evidence
+
+| case | old (`sides`) | `mass` |
+|---|---|---|
+| toy: 3000 rows under-forecast, + 3 rows over-forecast at 0.90 | +0.714 (was -0.286 without them) | -0.284 (was -0.286) |
+| calibrated, beta(2, 5), n = 200 / 1000, one bin per value, 1000 draws | mean -0.558 / -0.558 | mean +0.000 / -0.000 (se 0.0014 / 0.0007) |
+| calibrated, beta(0.3, 3), n = 200, `strategy=10`, 1000 draws | mean -0.054 | mean +0.001 (se 0.001), 95% range -0.046 .. +0.048 |
+| calibrated, same, `adaptive=True, tie_safe=True` | mean -0.025 | mean +0.001 (se 0.001) |
+| calibrated, skewed 0.01 grid, n = 200, one bin per value | mean -0.116 | mean -0.000 (se 0.001) |
+| example of the tie-safe section, shift +1, n = 20000: tie-safe sweep / per value | +0.127 / +0.128 | +0.073 / +0.073 (1 - ECI_g = 0.074) |
+| same, shift -1 | -0.094 / -0.094 | -0.077 / -0.076 (1 - ECI_g = 0.077) |
+| same, shift 0 | +0.003 / +0.008 | -0.001 / -0.001 |
+
+Across all simulated settings (int, per-value, adaptive and tie-safe binnings; n = 200 to 2000) the mean of the
+mass balance under perfect calibration stayed within 2.5 standard errors of 0 and below 0.0025 in absolute
+value. Being linear in the residuals it is also far less sensitive to the binning than the old balance.
+
+Tests (`tests/test_mass_balance.py`): default output unchanged and `balance='sides'` identical to it; invalid value
+raises; the toy case above (exact values); `|ec_dir| <= 1 - ec_g` and `ec_dir == sum(w s d)` on 150 random
+diagnoses across five binnings; equality `ec_dir = +-(1 - ec_g)` on one-sided data, also with a bin exactly on the
+diagonal; sign on over- and under-confident continuous and quantised data (three binnings, three seeds); perfect
+calibration: 300 draws, n = 500, `strategy=10` and one bin per value, |mean| < 4 standard errors of the mean
+(about 0.007, false-failure probability < 1e-4) and < 0.01, with the old balance's -0.56 as a control; composition
+with `tie_safe=True` (sweep and `strategy=15`: sign, |ec_dir| < 0.01 when calibrated, the bound, same `binids` as
+without the option); multi-class through `classwise_calibration`.
+
+```
+PYTHONPATH=. python -m pytest tests/test.py tests/test_tie_safe.py tests/test_mass_balance.py -q
+50 passed
+```
+
+## Things to know
+
+- `ec_underconf` / `ec_overconf` are still the within-side means (1 - mean d on each side); they are not
+  weighted by the share of data on their side, and with `'mass'` the balance is no longer their difference.
+- Sides are decided by the exact comparison y_b vs x_b in `underbelow_line`, so a bin that is on the diagonal up
+  to rounding (e.g. 100 rows at 0.4 with 40 positives: x = 0.4000000000000001) is `'left'` or `'right'`, not
+  `'lie'`. It adds nothing to the mass balance (d ~ 1e-16) but counts as a full bin of its side in the old one.
+- A `str` strategy is one bin per unique value whatever the string (`'doane'` is not Doane's rule). On
+  continuous scores that is one bin per row, where y_b is 0 or 1: the old balance is then dominated by the
+  label noise (the -0.56 / -0.84 above), and ECI_g too is mostly noise.

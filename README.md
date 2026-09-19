@@ -73,6 +73,12 @@ measures, binning_dict = cf.calibrationdiagnosis(classes_scores, adaptive=True)
 # If the probabilities have many ties (e.g. they are rounded to a grid, with large blocks at 0 and 1), add tie_safe=True:
 # tied probabilities are never split across bins, so the result does not depend on the order of the rows (see PATCH_NOTES.md)
 measures, binning_dict = cf.calibrationdiagnosis(classes_scores, adaptive=True, tie_safe=True)
+# ec_dir (ECI_balance) is positive for over-forecasting and negative for under-forecasting. By default
+# (balance='sides') it is the mean distance of the over-forecast bins minus that of the under-forecast bins, each side
+# weighted only within itself, so a few rows alone on one side weigh as much as the rest of the data. With
+# balance='mass' each bin is weighted by its share of all data: |ec_dir| <= 1 - ec_g, and the old value is also
+# returned as 'ec_dir_sides' (see PATCH_NOTES.md)
+measures, binning_dict = cf.calibrationdiagnosis(classes_scores, adaptive=True, tie_safe=True, balance='mass')
 
 # The 'measures' dictionary contains the following structure for each class:
 measures = {
@@ -86,7 +92,8 @@ measures = {
         'over_fr': np.ndarray,  # Relative frequency of over-confident predictions for class '0'
         'ec_underconf': float,  # A measure of under-confidence across all predictions for class '0'
         'ec_overconf': float,  # A measure of over-confidence across all predictions for class '0'
-        'ec_dir': float,  # A measure of the general direction of miscalibration for class '0'
+        'ec_dir': float,  # A measure of the general direction of miscalibration for class '0' (> 0 over-forecast; see balance)
+        # 'ec_dir_sides': float,  # only with balance='mass': the default (per-side) ec_dir
         'brier_loss': float,  # Brier score loss for class '0'
         'over_pts': np.ndarray,  # Points that represent over-confident predictions for class '0'
         'under_pts': np.ndarray,  # Points that represent under-confident predictions for class '0'
