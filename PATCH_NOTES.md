@@ -391,3 +391,12 @@ PYTHONPATH=. python -m pytest tests/test.py tests/test_tie_safe.py tests/test_ma
 - A `str` strategy is one bin per unique value whatever the string (`'doane'` is not Doane's rule). On
   continuous scores that is one bin per row, where y_b is 0 or 1: the old balance is then dominated by the
   label noise (the -0.56 / -0.84 above), and ECI_g too is mostly noise.
+
+# Follow-up fixes
+
+Small, separate commits; each item says whether default outputs change.
+
+- **Test discovery.** `tests/test.py` is renamed `tests/test_calibration_framework.py` (content unchanged) and
+  `pyproject.toml` gets a `[tool.pytest.ini_options]` section (`testpaths = ["tests"]`, `pythonpath = ["."]`), so
+  a plain `pytest` from the repository root runs every test; before, `pytest tests/` skipped `test.py`. The
+  commands above that name `tests/test.py` refer to the file before the rename.
