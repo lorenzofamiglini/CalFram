@@ -410,3 +410,11 @@ Small, separate commits; each item says whether default outputs change.
   []`; that condition could not guard anything (a length mismatch makes the boolean indexing raise first). It is
   now an explicit check that `binfr` has one weight per calibration point, raising a `ValueError` (reported as the
   usual per-class warning with NaN measures). Default outputs do not change.
+- **On the diagonal.** `underbelow_line` compared y and x exactly, so a bin that is calibrated up to rounding
+  (100 rows at 0.4 with 40 positives: x = 0.4000000000000001) was `'left'` or `'right'` rather than `'lie'`, and
+  in the `'sides'` balance it counted as a full bin of that side (a near-zero distance that dilutes that side's
+  mean). Points within 1e-12 of the diagonal now lie on it (`atol` argument). With that, a curve whose points all
+  lie on the diagonal became reachable in practice, and it used to return NaN for every measure; it is now
+  measured: `ec_g` = 1, ECEs computed, `ec_underconf` / `ec_overconf` and the `'sides'` `ec_dir` NaN (no side),
+  the `'mass'` balance 0 (so the mass balance is NaN only when there are no bin weights, not "in the same case as
+  the old one" as stated above). Default outputs change only for bins within 1e-12 of the diagonal.

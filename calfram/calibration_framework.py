@@ -261,7 +261,9 @@ class CalibrationFramework:
                 mask_left: NDArray[np.bool_] = np.array([w == 'left' for w in where_are])
                 mask_right: NDArray[np.bool_] = np.array([w == 'right' for w in where_are])
             
-                if len(where_are) == 0 or np.all(np.array(where_are) == 'lie'): 
+                # A curve whose points all lie on the diagonal is measured (ec_g = 1), not reported as NaN; only the
+                # measures of the empty sides are NaN
+                if len(where_are) == 0:
                     dict_msr: Dict[str, Union[float, NDArray[np.float64]]] = {
                         'ece_acc': np.nan, 'ece_fp': np.nan, 'ec_g': np.nan, 'ec_under': np.nan, 'under_fr': np.nan,
                         'ec_over': np.nan, 'over_fr': np.nan, 'ec_underconf': np.nan, 'ec_overconf': np.nan,
@@ -309,11 +311,11 @@ class CalibrationFramework:
 
                     if balance == 'mass':
                         # Signed and weighted by the share of all data: +d_b over-forecast, -d_b under-forecast,
-                        # 0 on the diagonal. NaN in the same case as the 'sides' balance (no side with weight).
+                        # 0 on the diagonal, so 0 when every bin lies on the diagonal. NaN only without weights.
                         fcc_dir_sides: float = fcc_dir
                         weights: NDArray[np.float64] = np.asarray(bins_dict['binfr'], dtype=float)
                         side_sign: NDArray[np.float64] = mask_right.astype(float) - mask_left.astype(float)
-                        if np.isnan(fcc_dir_sides) or np.sum(weights) <= 0:
+                        if np.sum(weights) <= 0:
                             fcc_dir = np.nan
                         else:
                             fcc_dir = float(np.sum(weights * side_sign * pts_distance_norm) / np.sum(weights))
@@ -498,11 +500,14 @@ class CalibrationFramework:
         return np.array(height_list)
 
     @staticmethod
-    def underbelow_line(pts: NDArray[np.float64]) -> List[str]:
-        return [ 
-                'left' if (1 - 0) * (pt[1] - 0) - (pt[0] - 0) * (1 - 0) > 0 else 
-                'right' if (1 - 0) * (pt[1] - 0) - (pt[0] - 0) * (1 - 0) < 0 else 
-                'lie' for idx, pt in enumerate(pts)
+    def underbelow_line(pts: NDArray[np.float64], atol: float = 1e-12) -> List[str]:
+        """'left' (above the diagonal, y > x: under-forecast), 'right' (below, y < x: over-forecast) or 'lie' (on it)
+        for each point (x, y). Points within atol of the diagonal lie on it: the mean score of a bin is a floating-point
+        sum, so a bin that is exactly calibrated (100 rows at 0.4 with 40 positives) has x = 0.4000000000000001."""
+        return [
+                'lie' if np.isclose(pt[1], pt[0], rtol=0, atol=atol) else
+                'left' if pt[1] > pt[0] else
+                'right' for pt in pts
                 ]
 
     @staticmethod

@@ -71,5 +71,40 @@ class TestWeightCheck(unittest.TestCase):
         self.assertEqual(len(bins['binfr']), len(m['where']))
 
 
+class TestOnTheDiagonal(unittest.TestCase):
+
+    def setUp(self):
+        self.cf = CalibrationFramework()
+
+    def test_underbelow_line(self):
+        pts = np.array([[0.4, 0.4 + 1e-15], [0.4, 0.4 - 1e-15], [0.4, 0.41], [0.4, 0.39], [0.25, 0.25]])
+        self.assertEqual(self.cf.underbelow_line(pts), ['lie', 'lie', 'left', 'right', 'lie'])
+
+    def test_calibrated_bin_at_0_4(self):
+        score, y = blocks([(0.4, 100, 40)])
+        self.assertNotEqual(score.mean(), 0.4)   # the rounding this is about
+        for balance in ('sides', 'mass'):
+            m, _ = diagnose(self.cf, score, y, strategy=10, balance=balance)
+            self.assertEqual(list(m['where']), ['lie'])
+            self.assertAlmostEqual(m['ec_g'], 1.0, places=12)
+            self.assertTrue(np.isnan(m['ec_underconf']) and np.isnan(m['ec_overconf']))
+            if balance == 'mass':
+                self.assertEqual(m['ec_dir'], 0.0)
+                self.assertTrue(np.isnan(m['ec_dir_sides']))
+            else:
+                self.assertTrue(np.isnan(m['ec_dir']))   # the 'sides' balance has no side to average
+
+    def test_calibrated_bin_among_others(self):
+        # before, the bin at 0.4 was 'left' or 'right' by 1e-16 (here 'left': x = 0.4000000000000001), and counted as a bin of that side
+        over = [(0.2, 100, 10), (0.7, 100, 50)]
+        score, y = blocks(over + [(0.4, 100, 40)])
+        m, _ = diagnose(self.cf, score, y, strategy=10, balance='mass')
+        self.assertEqual(list(m['where']), ['right', 'lie', 'right'])
+        d = np.array([0.1 / 0.8, 0.2 / 0.7])
+        self.assertAlmostEqual(m['ec_dir_sides'], np.mean(d), places=12)
+        self.assertAlmostEqual(m['ec_dir'], np.sum(d) / 3, places=12)
+        self.assertAlmostEqual(m['ec_dir'], 1 - m['ec_g'], places=12)
+
+
 if __name__ == '__main__':
     unittest.main()
