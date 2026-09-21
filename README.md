@@ -50,6 +50,15 @@ Together, these measures provide a complete understanding of your model's calibr
    pip install -r requirements.txt
    ```
 
+## Breaking change: string strategies
+
+`strategy='doane'` (the default of `calibrationdiagnosis` and `reliabilityplot`) used to give one bin per unique
+score whatever the string, which on continuous scores means one bin per row. A string strategy is now a rule of
+`np.histogram_bin_edges` (`'auto'`, `'fd'`, `'doane'`, `'scott'`, `'stone'`, `'rice'`, `'sturges'`, `'sqrt'`): equal-width
+bins between the smallest and the largest score, assigned as `np.histogram` does. The old behaviour is
+`strategy='unique'`; pass it to reproduce earlier results. An unknown string raises a `ValueError`. See
+PATCH_NOTES.md ("Follow-up fixes").
+
 ## Example
 
 ```python
@@ -66,10 +75,21 @@ cf = CalibrationFramework()
 # Prepare data for calibration analysis
 classes_scores = cf.select_probability(y_true, y_prob, y_pred)
 
-# Compute all the metrics based on 15 bins with equal-width
+# Compute all the metrics based on 15 equal-mass bins (quantiles of the scores)
 measures, binning_dict = cf.calibrationdiagnosis(classes_scores, strategy=15, adaptive=False)
+# Or with a np.histogram_bin_edges rule (the default is 'doane'), or 'unique' for one bin per unique score
+measures, binning_dict = cf.calibrationdiagnosis(classes_scores, strategy='doane')
 # Or, compute all the metrics based on automatic monotonic sweep method for identifying the right number of bins 
 measures, binning_dict = cf.calibrationdiagnosis(classes_scores, adaptive=True)
+# If the probabilities have many ties (e.g. they are rounded to a grid, with large blocks at 0 and 1), add tie_safe=True:
+# tied probabilities are never split across bins, so the result does not depend on the order of the rows (see PATCH_NOTES.md)
+measures, binning_dict = cf.calibrationdiagnosis(classes_scores, adaptive=True, tie_safe=True)
+# ec_dir (ECI_balance) is positive for over-forecasting and negative for under-forecasting. By default
+# (balance='sides') it is the mean distance of the over-forecast bins minus that of the under-forecast bins, each side
+# weighted only within itself, so a few rows alone on one side weigh as much as the rest of the data. With
+# balance='mass' each bin is weighted by its share of all data: |ec_dir| <= 1 - ec_g, and the old value is also
+# returned as 'ec_dir_sides' (see PATCH_NOTES.md)
+measures, binning_dict = cf.calibrationdiagnosis(classes_scores, adaptive=True, tie_safe=True, balance='mass')
 
 # The 'measures' dictionary contains the following structure for each class:
 measures = {
@@ -83,7 +103,10 @@ measures = {
         'over_fr': np.ndarray,  # Relative frequency of over-confident predictions for class '0'
         'ec_underconf': float,  # A measure of under-confidence across all predictions for class '0'
         'ec_overconf': float,  # A measure of over-confidence across all predictions for class '0'
-        'ec_dir': float,  # A measure of the general direction of miscalibration for class '0'
+        'ec_dir': float,  # A measure of the general direction of miscalibration for class '0' (> 0 over-forecast; see balance)
+        # 'ec_dir_sides': float,  # only with balance='mass': the default (per-side) ec_dir
+        # 'ec_underconf_mass': float,  # only with balance='mass': sum of w * d over the under-forecast bins (0 is best)
+        # 'ec_overconf_mass': float,  # only with balance='mass': same over the over-forecast bins; ec_dir = over - under
         'brier_loss': float,  # Brier score loss for class '0'
         'over_pts': np.ndarray,  # Points that represent over-confident predictions for class '0'
         'under_pts': np.ndarray,  # Points that represent under-confident predictions for class '0'
