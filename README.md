@@ -24,28 +24,21 @@ Our framework offers various calibration metrics for a holistic evaluation of yo
 - **ECE Accuracy based formulation**
 - **ECE Frequency based formulation**
 - **Brier Score Loss** (Note: for both binary and multiclass, the brier score loss is bounded in [0,1]).
-- **Signed Index (ECI<sub>signed</sub>)** (new in 0.2.0): the direction of miscalibration on the same bins as ECI<sub>g</sub>, each side weighted by its mass. Bounds [-1, 1], positive where predictions exceed outcomes.
-- **Tie-safe binning** (new in 0.2.0): `strategy='pooled_sweep'`, a binning that never splits scores that are equal, for models whose scores take few distinct values.
-- **Ideal value** (new in 0.2.0): `ideal_calibration`, what every measure would be if the model were perfectly calibrated with these probabilities on these items, with an interval and a p-value.
+- **Tie-safe binning**, for scores that take few distinct values: `tie_safe=True` (equal-mass bins that never split a tied block, with a sweep) and `strategy='pooled_sweep'` (one bin per distinct score, pooled until monotone).
+- **Mass-weighted balance** (`balance='mass'`): the direction of miscalibration with each side weighted by its share of the data.
+- **Ideal value** (`ideal_calibration`): what every measure would be if the model were perfectly calibrated with these probabilities on these items, with an interval and a p-value.
 
 Together, these measures provide a complete understanding of your model's calibration and help to make targeted modifications to improve the model. Our framework works directly with any model's outputs, making it agnostic to any Machine Learning and Deep Learning framework.
 
-## Tie-safe binning, a signed index, and the ideal value
+## Tie-safe binning by pooling, and the ideal value
 
-Three additions for scores that take few distinct values (a 0.01 grid, a rounded API
-output, a small model), where ordinary binning breaks down.
-
-**`strategy='pooled_sweep'`**: a binning that never splits a tied block. It starts from
+**`strategy='pooled_sweep'`**: a second tie-safe binning, next to `tie_safe=True`. It starts from
 one bin per distinct score and pools adjacent bins whose observed frequencies violate
-monotonicity (pool-adjacent-violators, the isotonic regression of the outcome on the
-score). Quantile edges and the adaptive sweep cut through tied blocks, so their result
-depends on the order of the rows; this one depends only on the counts per value.
-
-**`ec_signed`**: a signed companion to ECI<sub>g</sub> on the same bins,
-Σ<sub>b</sub> w<sub>b</sub> (x<sub>b</sub> − y<sub>b</sub>) / max(x<sub>b</sub>, 1 − x<sub>b</sub>),
-positive where predictions exceed outcomes. Unlike ECI<sub>b</sub>, which averages within
-each side, it weights each side by its mass, so it says which way the model is wrong on
-balance. `ec_signed_over` and `ec_signed_under` are its two sides.
+monotonicity (pool-adjacent-violators: the isotonic regression of the outcome on the score).
+A tied block is never split, the result depends only on the counts per value, and the
+number of bins is chosen by the data rather than by a target count: where `tie_safe=True`
+keeps equal-mass bins and the sweep stops at the first violation, this pools the violators
+and keeps everything else apart. On a 0.01 grid it typically returns 10 to 30 bins.
 
 **`ideal_calibration`**: what a perfectly calibrated model with *these* probabilities
 would score on *these* items. ECI<sub>g</sub> is 1 only in the limit; on a finite sample
@@ -61,17 +54,15 @@ from calfram.calibration_framework import CalibrationFramework
 
 cf = CalibrationFramework()
 classes_scores = cf.select_probability(y_true, y_prob, y_pred)
-measures, bins = cf.calibrationdiagnosis(classes_scores, strategy='pooled_sweep')
-measures['1']['ec_g'], measures['1']['ec_signed']
+measures, bins = cf.calibrationdiagnosis(classes_scores, strategy='pooled_sweep', balance='mass')
 
-ideal = cf.ideal_calibration(y_true, y_prob, y_pred, strategy='pooled_sweep', n_sim=1000, seed=0)
+ideal = cf.ideal_calibration(y_true, y_prob, y_pred, strategy='pooled_sweep', balance='mass', n_sim=1000, seed=0)
 ideal['1']['ec_g']      # {'observed': ..., 'ideal': ..., 'std': ..., 'ci': (lo, hi), 'p_value': ..., 'direction': 'less'}
 ```
 
 `n_sim` draws cost `n_sim` calls of `calibrationdiagnosis`; 200 is enough for the ideal
-value, 1,000 or more for a p-value below 0.01. These were developed for the audit of a
-model that returns probabilities on a 0.01 grid, where the tie-safe binning changed the
-sign of the balance on several tasks and the ideal value separated finite-sample noise
+value, 1,000 or more for a p-value below 0.01. Developed for an audit of a model that
+returns probabilities on a 0.01 grid, where the ideal value separated finite-sample noise
 (about 0.02 in ECE at n = 2,500) from miscalibration of the same size.
 
 ## Installation
@@ -97,6 +88,15 @@ sign of the balance on several tasks and the ideal value separated finite-sample
    pip install -r requirements.txt
    ```
 
+## Breaking change: string strategies
+
+`strategy='doane'` (the default of `calibrationdiagnosis` and `reliabilityplot`) used to give one bin per unique
+score whatever the string, which on continuous scores means one bin per row. A string strategy is now a rule of
+`np.histogram_bin_edges` (`'auto'`, `'fd'`, `'doane'`, `'scott'`, `'stone'`, `'rice'`, `'sturges'`, `'sqrt'`): equal-width
+bins between the smallest and the largest score, assigned as `np.histogram` does. The old behaviour is
+`strategy='unique'`; pass it to reproduce earlier results. An unknown string raises a `ValueError`. See
+PATCH_NOTES.md ("Follow-up fixes").
+
 ## Example
 
 ```python
@@ -113,12 +113,23 @@ cf = CalibrationFramework()
 # Prepare data for calibration analysis
 classes_scores = cf.select_probability(y_true, y_prob, y_pred)
 
-# Compute all the metrics based on 15 bins with equal-width
+# Compute all the metrics based on 15 equal-mass bins (quantiles of the scores)
 measures, binning_dict = cf.calibrationdiagnosis(classes_scores, strategy=15, adaptive=False)
+# Or with a np.histogram_bin_edges rule (the default is 'doane'), or 'unique' for one bin per unique score
+measures, binning_dict = cf.calibrationdiagnosis(classes_scores, strategy='doane')
 # Or, compute all the metrics based on automatic monotonic sweep method for identifying the right number of bins 
 measures, binning_dict = cf.calibrationdiagnosis(classes_scores, adaptive=True)
-# Or, with the tie-safe binning: one bin per distinct score, pooled until monotone, ties never split
-measures, binning_dict = cf.calibrationdiagnosis(classes_scores, strategy='pooled_sweep')
+# If the probabilities have many ties (e.g. they are rounded to a grid, with large blocks at 0 and 1), add tie_safe=True:
+# tied probabilities are never split across bins, so the result does not depend on the order of the rows (see PATCH_NOTES.md)
+measures, binning_dict = cf.calibrationdiagnosis(classes_scores, adaptive=True, tie_safe=True)
+# ec_dir (ECI_balance) is positive for over-forecasting and negative for under-forecasting. By default
+# (balance='sides') it is the mean distance of the over-forecast bins minus that of the under-forecast bins, each side
+# weighted only within itself, so a few rows alone on one side weigh as much as the rest of the data. With
+# balance='mass' each bin is weighted by its share of all data: |ec_dir| <= 1 - ec_g, and the old value is also
+# returned as 'ec_dir_sides' (see PATCH_NOTES.md)
+measures, binning_dict = cf.calibrationdiagnosis(classes_scores, adaptive=True, tie_safe=True, balance='mass')
+# Or the other tie-safe binning: one bin per distinct score, pooled until the frequencies are monotone
+measures, binning_dict = cf.calibrationdiagnosis(classes_scores, strategy='pooled_sweep', balance='mass')
 
 # The 'measures' dictionary contains the following structure for each class:
 measures = {
@@ -132,10 +143,10 @@ measures = {
         'over_fr': np.ndarray,  # Relative frequency of over-confident predictions for class '0'
         'ec_underconf': float,  # A measure of under-confidence across all predictions for class '0'
         'ec_overconf': float,  # A measure of over-confidence across all predictions for class '0'
-        'ec_dir': float,  # A measure of the general direction of miscalibration for class '0'
-        'ec_signed': float,  # Signed index: sum_b w_b (x_b - y_b) / max(x_b, 1 - x_b); positive = predictions above outcomes
-        'ec_signed_over': float,  # Its part from bins where predictions exceed outcomes
-        'ec_signed_under': float,  # Its part from bins where predictions fall short
+        'ec_dir': float,  # A measure of the general direction of miscalibration for class '0' (> 0 over-forecast; see balance)
+        # 'ec_dir_sides': float,  # only with balance='mass': the default (per-side) ec_dir
+        # 'ec_underconf_mass': float,  # only with balance='mass': sum of w * d over the under-forecast bins (0 is best)
+        # 'ec_overconf_mass': float,  # only with balance='mass': same over the over-forecast bins; ec_dir = over - under
         'brier_loss': float,  # Brier score loss for class '0'
         'over_pts': np.ndarray,  # Points that represent over-confident predictions for class '0'
         'under_pts': np.ndarray,  # Points that represent under-confident predictions for class '0'
@@ -173,7 +184,7 @@ ideal['0']['ec_g'] = {
     'std': float,
     'ci': (float, float),  # central 95% interval of the draws
     'p_value': float,  # Monte Carlo test of perfect calibration: share of draws at least as extreme
-    'direction': str,  # 'less' (ec_g, ec_overconf, ec_underconf), 'greater' (ece_fp, ece_acc), 'two-sided' (ec_dir, ec_signed)
+    'direction': str,  # 'less' (ec_g, ec_overconf, ec_underconf), 'greater' (ece_fp, ece_acc, the mass shares), 'two-sided' (ec_dir)
     'n_undefined': float,  # draws on which the measure was undefined
 }
 
@@ -199,8 +210,8 @@ plt.show()
 ## Changelog
 
 **0.2.0**
-- `strategy='pooled_sweep'`: tie-safe monotone binning (pool-adjacent-violators over distinct scores).
-- `ec_signed`, `ec_signed_over`, `ec_signed_under` in every per-class result.
+- `tie_safe=True`: tie-safe equal-mass bins and sweep; `balance='mass'`; string strategies as `np.histogram_bin_edges` rules, `'unique'` for one bin per score (see PATCH_NOTES.md).
+- `strategy='pooled_sweep'`: tie-safe binning by pooling (pool-adjacent-violators over distinct scores).
 - `ideal_calibration`: the ideal value of every measure, with an interval and a Monte Carlo p-value.
 - `select_probability(..., n_classes=)` for samples that miss a class.
 - Fix: `calibrationdiagnosis` raised `UnboundLocalError` instead of warning when a class failed.

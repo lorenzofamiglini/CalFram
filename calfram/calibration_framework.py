@@ -6,6 +6,19 @@ from sklearn.metrics import brier_score_loss
 import matplotlib.pyplot as plt
 import warnings
 
+# str strategies: the rules of np.histogram_bin_edges, or 'unique' (one bin per unique score)
+HISTOGRAM_RULES = ('auto', 'fd', 'doane', 'scott', 'stone', 'rice', 'sturges', 'sqrt')
+STR_STRATEGIES = HISTOGRAM_RULES + ('unique', 'pooled_sweep')
+
+
+def check_strategy(strategy: Union[int, str]) -> None:
+    if isinstance(strategy, str) and strategy not in STR_STRATEGIES:
+        raise ValueError(f"Unknown strategy {strategy!r}: use an int (number of quantile bins), 'unique' (one bin per "
+                         f"unique score), 'pooled_sweep' (one bin per unique score, adjacent bins pooled until the observed "
+                         f"frequencies are monotone; ties never split) "
+                         f"unique score) or one of the np.histogram_bin_edges rules {HISTOGRAM_RULES}.")
+
+
 class CalibrationFramework:
     def __init__(self) -> None:
         self.ohe: OneHotEncoder = OneHotEncoder(sparse_output=False)
@@ -29,24 +42,55 @@ class CalibrationFramework:
         b: int = self.monotonic_sweep_calibration(binary_data, len(Y_probs))
         return min(b, len(np.unique(Y_probs)))
 
-    def binning_schema(self, prob: NDArray[np.float64], Y: NDArray[np.int64], method: Union[int, str] = 15, ndim: Union[int, None] = 1, adaptive: bool = False) -> Dict[str, Union[NDArray[np.float64], NDArray[np.int64], float]]:
+    def monotonic_sweep_calibration_tie_safe(self, cum_counts: NDArray[np.int64], cum_positives: NDArray[np.float64]) -> NDArray[np.int64]:
+        """
+        Monotonic sweep that never splits a block of tied scores.
+
+        cum_counts and cum_positives are the cumulative number of samples and of positives over the distinct
+        scores in increasing order, both starting with 0. The bins checked for each b are the ones of
+        compute_tie_safe_cuts, so they only depend on the counts per distinct score and not on the order of
+        the rows. Returns the cuts of the last monotonic binning (no cut stands for a single bin), as checked
+        by is_monotonic_tie_safe. With all-distinct scores the bins, and therefore the selected b, are those
+        of monotonic_sweep_calibration.
+        """
+        n: int = int(cum_counts[-1])
+        n_unique: int = len(cum_counts) - 1
+        ties: bool = n_unique < n
+        best_cuts: NDArray[np.int64] = np.array([], dtype=np.int64)
+        b: int = 2
+        while b <= n:
+            cuts: NDArray[np.int64] = self.compute_tie_safe_cuts(cum_counts, b)
+            idx: NDArray[np.int64] = np.concatenate([[0], cuts, [n_unique]])
+            if not self.is_monotonic_tie_safe(np.diff(cum_counts[idx]), np.diff(cum_positives[idx]), robust=ties):
+                break
+            best_cuts = cuts
+            if len(cuts) + 1 >= n_unique:
+                break  # One bin per distinct score already: nothing left to refine
+            b += 1
+        return best_cuts
+
+    def binning_schema(self, prob: NDArray[np.float64], Y: NDArray[np.int64], method: Union[int, str] = 15, ndim: Union[int, None] = 1, adaptive: bool = False, tie_safe: bool = False) -> Dict[str, Union[NDArray[np.float64], NDArray[np.int64], float]]:
         if ndim is not None:
             prob = prob[:, ndim]
         else:
             prob = np.max(prob, axis=-1)
 
         if method == 'pooled_sweep' and not adaptive:
+            # Tie-safe by construction (whole distinct scores are pooled), so tie_safe has nothing to add
             binids, lower_edges, binfr = self.pooled_sweep_bins(prob, Y)
             return {'bins': lower_edges, 'binids': binids, 'binfr': binfr}
 
         n_classes: int = len(np.unique(Y))
 
-        if adaptive:
+        if adaptive and not tie_safe:
             b: int = self.monotonic_sweep_calibration_multiclass(prob, Y, n_classes)
             b = min(b, len(np.unique(prob)))
+        elif adaptive:
+            b = None  # tie_safe: the sweep below returns the bins themselves, not only their number
         else:
             if not isinstance(method, (int, str)):
                 raise ValueError("Please provide an int or str object for selecting the number of bins or select adaptive = True for monotonic sweep.")
+            check_strategy(method)
             b = method
 
         if prob.ndim == 1:
@@ -56,6 +100,7 @@ class CalibrationFramework:
         
         unique_probs = sorted(set([data[0] for data in binary_data]))
         n_unique = len(unique_probs)
+        per_value: bool = False  # True when there is one bin per unique probability value
         
         if n_unique < 2:
             warnings.warn(f"Only {n_unique} unique probability values found. Creating artificial bins.")
@@ -66,23 +111,51 @@ class CalibrationFramework:
         elif isinstance(b, int) and n_unique < b:
             warnings.warn(f"Only {n_unique} unique probability values found, using these instead of {b} bins.")
             bin_edges = np.array(unique_probs)
+            # Only with tie_safe: the default keeps the bins of the previous versions, where the two largest
+            # values share a bin when 1.0 is one of them
+            per_value = tie_safe
+        elif tie_safe and (adaptive or isinstance(b, int)):
+            # Bins made of whole unique values: a block of tied probabilities is never split and no value
+            # lies on an edge, so the result depends neither on the order of the rows nor on np.digitize
+            # being left- or right-closed
+            unique_values, inverse, counts = np.unique(prob, return_inverse=True, return_counts=True)
+            positives = np.bincount(inverse.ravel(), weights=(np.ravel(Y) == 1), minlength=n_unique)
+            cum_counts = np.concatenate([[0], np.cumsum(counts)])
+            if adaptive:
+                cuts = self.monotonic_sweep_calibration_tie_safe(cum_counts, np.concatenate([[0.0], np.cumsum(positives)]))
+            else:
+                cuts = self.compute_tie_safe_cuts(cum_counts, b)
+            bin_edges = self.tie_safe_bin_edges(unique_values, cuts)
         else:
             # Use quantile-based binning for better distribution
             if isinstance(b, int):
                 bin_edges = np.quantile(prob, np.linspace(0, 1, min(b + 1, n_unique)))
                 bin_edges = np.unique(bin_edges)  # Remove duplicates
-            else:
+            elif b == 'unique':
                 bin_edges = np.array(unique_probs)
-        
+                per_value = True
+            else:
+                # A rule of np.histogram_bin_edges: equal-width bins between the smallest and the largest score, with
+                # np.histogram's assignment (left-closed bins, the last one closed); no padding to [0, 1]
+                bin_edges = np.histogram_bin_edges(prob, bins=b)
+                return self.nonempty_bins(bin_edges, np.digitize(prob, bin_edges[1:-1]), len(prob))
+
         if bin_edges[0] > 0:
             bin_edges = np.concatenate([[0.0], bin_edges])
         if bin_edges[-1] < 1:
             bin_edges = np.concatenate([bin_edges, [1.0]])
+        elif per_value:
+            # np.digitize only gets the inner edges: without a closing edge the largest value (1.0) would
+            # not be one of them and would share the bin of the second largest value
+            bin_edges = np.concatenate([bin_edges, [bin_edges[-1]]])
         
         binids: NDArray[np.int64] = np.digitize(prob, bin_edges[1:-1])
-        
+        return self.nonempty_bins(bin_edges, binids, len(prob))
+
+    @staticmethod
+    def nonempty_bins(bin_edges: NDArray[np.float64], binids: NDArray[np.int64], n: int) -> Dict[str, Union[NDArray[np.float64], NDArray[np.int64], float]]:
         bin_counts = np.bincount(binids, minlength=len(bin_edges) - 1)
-        relative_freq_bin: NDArray[np.float64] = bin_counts / len(prob)
+        relative_freq_bin: NDArray[np.float64] = bin_counts / n
         
         # Remove empty bins
         non_empty = bin_counts > 0
@@ -100,14 +173,14 @@ class CalibrationFramework:
             'binfr': relative_freq_bin[non_empty]
         }
 
-    def calibrationcurve(self, y_true: NDArray[np.int64], y_prob: NDArray[np.float64], strategy: Union[int, str] = 10, undersampling: bool = False, adaptive: bool = False) -> Tuple[NDArray[np.float64], NDArray[np.float64], Dict[str, Union[NDArray[np.float64], NDArray[np.int64], float]]]:
+    def calibrationcurve(self, y_true: NDArray[np.int64], y_prob: NDArray[np.float64], strategy: Union[int, str] = 10, undersampling: bool = False, adaptive: bool = False, tie_safe: bool = False) -> Tuple[NDArray[np.float64], NDArray[np.float64], Dict[str, Union[NDArray[np.float64], NDArray[np.int64], float]]]:
         np.random.seed(123)
 
         labels: NDArray[np.int64] = np.unique(y_true)
         if len(labels) > 2:
             raise ValueError(f"Only binary classification is supported. Provided labels {labels}. For Multiclass use 1 vs All Approach.")
 
-        bins_dict: Dict[str, Union[NDArray[np.float64], NDArray[np.int64], float]] = self.binning_schema(y_prob, y_true, method=strategy, ndim=1, adaptive=adaptive)
+        bins_dict: Dict[str, Union[NDArray[np.float64], NDArray[np.int64], float]] = self.binning_schema(y_prob, y_true, method=strategy, ndim=1, adaptive=adaptive, tie_safe=tie_safe)
         
         if y_prob.ndim == 1:
             prob_values = y_prob
@@ -181,54 +254,74 @@ class CalibrationFramework:
 
         return final_dict
 
-    def calibrationdiagnosis(self, classes_scores: Dict[str, Dict[str, NDArray[np.float64]]], strategy: Union[int, str] = 'doane', undersampling: bool = False, adaptive: bool =False) -> Tuple[Dict[str, Dict[str, Union[float, NDArray[np.float64]]]], Dict[str, Dict[str, Union[NDArray[np.float64], NDArray[np.int64], float]]]]:
+    def calibrationdiagnosis(self, classes_scores: Dict[str, Dict[str, NDArray[np.float64]]], strategy: Union[int, str] = 'doane', undersampling: bool = False, adaptive: bool =False, tie_safe: bool = False, balance: str = 'sides') -> Tuple[Dict[str, Dict[str, Union[float, NDArray[np.float64]]]], Dict[str, Dict[str, Union[NDArray[np.float64], NDArray[np.int64], float]]]]:
+        """
+        ECI measures of each class, computed on the bins of calibrationcurve.
+
+        ec_dir (ECI_balance) is signed, positive when the model over-forecasts (mean prediction above the observed
+        frequency, points below the diagonal) and negative when it under-forecasts. `balance` selects how it is
+        computed from the normalised bin distances d_b (the same distances as ec_g):
+
+        - 'sides' (default, unchanged): mean of d_b over the over-forecast bins minus the mean over the
+          under-forecast bins, each side weighted only within itself. The share of the data on each side does not
+          enter, so a single small bin alone on one side counts as much as the rest of the data on the other.
+        - 'mass': sum over all bins of w_b * s_b * d_b, with w_b the bin's share of the data (binfr), s_b = +1 for
+          over-forecast bins, -1 for under-forecast bins and 0 on the diagonal. |ec_dir| <= 1 - ec_g, with
+          equality when all bins are on one side. The old value is then also returned as 'ec_dir_sides', together
+          with 'ec_underconf_mass' and 'ec_overconf_mass': the sums of w_b * d_b over the under- and over-forecast
+          bins (each side's share of 1 - ec_g, 0 for an empty side), so that ec_dir = ec_overconf_mass -
+          ec_underconf_mass and ec_underconf_mass + ec_overconf_mass = 1 - ec_g up to the bins on the diagonal.
+          Unlike ec_underconf / ec_overconf (1 - the mean distance within one side, unchanged) they are
+          miscalibration shares: 0 is best.
+
+        See PATCH_NOTES.md.
+        """
+        if balance not in ('sides', 'mass'):
+            raise ValueError(f"balance must be 'sides' or 'mass', got {balance!r}.")
+        check_strategy(strategy)  # here, so that an unknown name raises instead of becoming a warning per class
         measures: Dict[str, Dict[str, Union[float, NDArray[np.float64]]]] = {}
         binning_dict: Dict[str, Dict[str, Union[NDArray[np.float64], NDArray[np.int64], float]]] = {}
         
         for i in classes_scores.keys():
             bins_dict: Dict[str, Union[NDArray[np.float64], NDArray[np.int64], float]] = {}
             try:
-                y, x, bins_dict = self.calibrationcurve(classes_scores[i]['y'], classes_scores[i]['proba'], strategy=strategy, undersampling=undersampling, adaptive=adaptive)
+                y, x, bins_dict = self.calibrationcurve(classes_scores[i]['y'], classes_scores[i]['proba'], strategy=strategy, undersampling=undersampling, adaptive=adaptive, tie_safe=tie_safe)
                 new_pts: NDArray[np.float64] = self.end_points(x, y)
 
-                tilde: NDArray[np.float64] = self.add_tilde(new_pts)
-                
-                # Fix: Safe triangle height calculation
-                pts_distance: NDArray[np.float64] = self.h_triangle_safe(new_pts, tilde)
-                max_pts: NDArray[np.float64] = new_pts.copy()
-
-                for pt in range(1, len(new_pts)):
-                    if new_pts[pt][0] <= 0.5:
-                        max_pts[pt] = [new_pts[pt][0], 1]
-                    else:
-                        max_pts[pt] = [new_pts[pt][0], 0]
-
-                max_height_distance: NDArray[np.float64] = self.h_triangle_safe(max_pts, tilde)
-                
-                with np.errstate(divide='ignore', invalid='ignore'):
-                    pts_distance_norm: NDArray[np.float64] = pts_distance / max_height_distance
-                    pts_distance_norm = np.nan_to_num(pts_distance_norm, nan=0.0, posinf=1.0, neginf=0.0)
+                # Normalised distance of each bin to the diagonal: |y - x| / max(x, 1 - x), i.e. the distance of
+                # (x, y) to the diagonal divided by that of the farthest point in the same column, (x, 1) or (x, 0).
+                # This is what the triangle heights of h_triangle_safe computed (to 3e-10 on random points), without
+                # Heron's formula, which lost up to ~4e-6 when two consecutive bins had (almost) the same x.
+                pts_distance_norm: NDArray[np.float64] = self.normalised_distance(x, y)
                 
                 where_are: List[str] = self.underbelow_line(new_pts[1:])  
+
+                # binfr (non-empty bins of binning_schema) and the curve points (non-empty bins of calibrationcurve)
+                # must describe the same bins, in the same order; the weights below index binfr with masks on the points
+                if len(where_are) > 0 and len(bins_dict['binfr']) != len(where_are):
+                    raise ValueError(f"{len(bins_dict['binfr'])} bin weights for {len(where_are)} calibration points.")
 
                 mask_left: NDArray[np.bool_] = np.array([w == 'left' for w in where_are])
                 mask_right: NDArray[np.bool_] = np.array([w == 'right' for w in where_are])
             
-                if len(where_are) == 0 or np.all(np.array(where_are) == 'lie'): 
+                # A curve whose points all lie on the diagonal is measured (ec_g = 1), not reported as NaN; only the
+                # measures of the empty sides are NaN
+                if len(where_are) == 0:
                     dict_msr: Dict[str, Union[float, NDArray[np.float64]]] = {
                         'ece_acc': np.nan, 'ece_fp': np.nan, 'ec_g': np.nan, 'ec_under': np.nan, 'under_fr': np.nan,
                         'ec_over': np.nan, 'over_fr': np.nan, 'ec_underconf': np.nan, 'ec_overconf': np.nan,
-                        'ec_dir': np.nan, 'ec_signed': np.nan, 'ec_signed_over': np.nan, 'ec_signed_under': np.nan,
-                        'over_pts': np.nan, 'under_pts': np.nan, 'ec_l_all': np.nan, 'where': np.nan,
+                        'ec_dir': np.nan, 'over_pts': np.nan, 'under_pts': np.nan, 'ec_l_all': np.nan, 'where': np.nan,
                         'relative-freq': np.nan, 'x': np.nan, 'y': np.nan
                     }
+                    if balance == 'mass':
+                        dict_msr.update(ec_dir_sides=np.nan, ec_underconf_mass=np.nan, ec_overconf_mass=np.nan)
                 else:
                     up_dist: NDArray[np.float64] = pts_distance_norm[mask_left]
                     below_dist: NDArray[np.float64] = pts_distance_norm[mask_right]
                     up_pts: NDArray[np.float64] = new_pts[1:][mask_left]
                     below_pts: NDArray[np.float64] = new_pts[1:][mask_right]
-                    up_weight: NDArray[np.float64] = bins_dict['binfr'][mask_left] if len(bins_dict['binfr']) >= np.sum(mask_left) else np.array([])
-                    below_weight: NDArray[np.float64] = bins_dict['binfr'][mask_right] if len(bins_dict['binfr']) >= np.sum(mask_right) else np.array([])
+                    up_weight: NDArray[np.float64] = bins_dict['binfr'][mask_left]
+                    below_weight: NDArray[np.float64] = bins_dict['binfr'][mask_right]
 
                     # Fix: Safe weighted average calculations
                     if len(bins_dict['binfr']) > 0 and np.sum(bins_dict['binfr']) > 0:
@@ -259,46 +352,62 @@ class CalibrationFramework:
                     else:
                         fcc_dir = np.nan
 
+                    if balance == 'mass':
+                        # Signed and weighted by the share of all data: +d_b over-forecast, -d_b under-forecast,
+                        # 0 on the diagonal, so 0 when every bin lies on the diagonal. NaN only without weights.
+                        fcc_dir_sides: float = fcc_dir
+                        weights: NDArray[np.float64] = np.asarray(bins_dict['binfr'], dtype=float)
+                        side_sign: NDArray[np.float64] = mask_right.astype(float) - mask_left.astype(float)
+                        if np.sum(weights) <= 0:
+                            fcc_dir = fcc_under_mass = fcc_over_mass = np.nan
+                        else:
+                            share: NDArray[np.float64] = weights * pts_distance_norm / np.sum(weights)
+                            # each side's share of 1 - ec_g (0 for an empty side); over - under = the mass balance
+                            fcc_under_mass: float = float(np.sum(share[mask_left]))
+                            fcc_over_mass: float = float(np.sum(share[mask_right]))
+                            fcc_dir = float(np.sum(side_sign * share))
+
                     ece: float = self.compute_eces(classes_scores[i]['y_one_hot_nclass'], classes_scores[i]['y_prob_one_hotnclass'],
                                     classes_scores[i]['y_pred_one_hotnclass'], bins_dict['binids'],
                                     bins_dict['bins'], 'fp', int(i))
                     ece_acc: float = self.compute_eces(classes_scores[i]['y_one_hot_nclass'], classes_scores[i]['y_prob_one_hotnclass'],
                                     classes_scores[i]['y_pred_one_hotnclass'], bins_dict['binids'], bins_dict['bins'], 'acc', int(i))
                     brierloss: float = brier_score_loss(classes_scores[i]['y'], classes_scores[i]['proba'][:,1])
-
-                    # The signed index: each bin's gap between prediction (x) and
-                    # observed frequency (y), normalised by the largest gap possible
-                    # at that x, weighted by the bin's share of the data. Positive
-                    # where predictions exceed outcomes (over-forecast; on a
-                    # top-label reading, over-confident). Its two sides add up to
-                    # it; |ec_signed| <= 1 - ec_g on the same bins.
-                    signed_term: NDArray[np.float64] = bins_dict['binfr'] * (x - y) / np.maximum(x, 1.0 - x)
-                    ec_signed: float = float(np.sum(signed_term))
-                    ec_signed_over: float = float(np.sum(signed_term[x > y]))
-                    ec_signed_under: float = float(np.sum(signed_term[x < y]))
-
+                
                     dict_msr = {
                         'ece_acc': ece_acc, 'ece_fp': ece, 'ec_g': fcc_g, 'ec_under': 1-up_dist, 'under_fr': up_weight, 'ec_over': 1-below_dist, 
                         'over_fr': below_weight, 'ec_underconf': fcc_underconf, 'ec_overconf': fcc_overconf, 
-                        'ec_dir': fcc_dir, 'ec_signed': ec_signed, 'ec_signed_over': ec_signed_over, 'ec_signed_under': ec_signed_under,
-                        'brier_loss': brierloss, 'over_pts': below_pts, 'under_pts': up_pts, 
+                        'ec_dir': fcc_dir, 'brier_loss': brierloss, 'over_pts': below_pts, 'under_pts': up_pts, 
                         'ec_l_all': 1-pts_distance_norm, 'where': np.array(where_are),
                         'relative-freq': bins_dict['binfr'], 'x': x, 'y': y
                     }
+                    if balance == 'mass':
+                        dict_msr['ec_dir_sides'] = fcc_dir_sides
+                        dict_msr['ec_underconf_mass'] = fcc_under_mass
+                        dict_msr['ec_overconf_mass'] = fcc_over_mass
             except Exception as e:
                 warnings.warn(f"Error processing class {i}: {str(e)}")
                 dict_msr = {
                     'ece_acc': np.nan, 'ece_fp': np.nan, 'ec_g': np.nan, 'ec_under': np.nan, 'under_fr': np.nan,
                     'ec_over': np.nan, 'over_fr': np.nan, 'ec_underconf': np.nan, 'ec_overconf': np.nan,
-                    'ec_dir': np.nan, 'ec_signed': np.nan, 'ec_signed_over': np.nan, 'ec_signed_under': np.nan,
-                    'over_pts': np.nan, 'under_pts': np.nan, 'ec_l_all': np.nan, 'where': np.nan,
+                    'ec_dir': np.nan, 'over_pts': np.nan, 'under_pts': np.nan, 'ec_l_all': np.nan, 'where': np.nan,
                     'relative-freq': np.nan, 'x': np.nan, 'y': np.nan, 'brier_loss': np.nan
                 }
+                if balance == 'mass':
+                    dict_msr.update(ec_dir_sides=np.nan, ec_underconf_mass=np.nan, ec_overconf_mass=np.nan)
 
             measures[str(i)] = dict_msr
             binning_dict[str(i)] = bins_dict
 
         return measures, binning_dict
+
+    @staticmethod
+    def normalised_distance(x: NDArray[np.float64], y: NDArray[np.float64]) -> NDArray[np.float64]:
+        """Distance of the points (x, y) to the diagonal divided by the largest possible one at the same x:
+        |y - x| / max(x, 1 - x), in [0, 1]. 1 - this is the local ECI of each bin."""
+        x = np.asarray(x, dtype=float)
+        y = np.asarray(y, dtype=float)
+        return np.abs(y - x) / np.maximum(x, 1 - x)
 
     @staticmethod
     def pooled_sweep_bins(prob: NDArray[np.float64], y: NDArray[np.int64]) -> Tuple[NDArray[np.int64], NDArray[np.float64], NDArray[np.float64]]:
@@ -310,10 +419,10 @@ class CalibrationFramework:
         (pool-adjacent-violators). The result is the coarsest partition of the
         distinct values into runs whose observed frequencies are non-decreasing:
         the isotonic regression of ``y`` on ``prob``. A tied block of items is
-        never split, because pooling only ever joins whole distinct values. That
-        is what quantile edges cannot promise on scores that take few distinct
-        values (a 0.01 grid, a rounded API output), where the balance measure
-        otherwise moves with the order of the rows.
+        never split, because pooling only ever joins whole distinct values, and
+        the number of bins is chosen by the data, not by a target count: where
+        ``tie_safe=True`` keeps equal-mass bins and stops the sweep at the first
+        violation, this pools the violators and keeps everything else apart.
 
         Returns ``(binids, bins, binfr)`` in the format of ``binning_schema``:
         the bin of each item, the lowest probability in each bin, and the share
@@ -347,16 +456,18 @@ class CalibrationFramework:
 
     # Which way miscalibration moves each measure, for the Monte Carlo p-value
     # of ``ideal_calibration``: an index that is 1 when perfect falls, an error
-    # rises, and the balance moves either way.
+    # or a miscalibration share rises, and a balance moves either way.
     IDEAL_DIRECTION: Dict[str, str] = {
         'ec_g': 'less', 'ec_overconf': 'less', 'ec_underconf': 'less',
-        'ece_fp': 'greater', 'ece_acc': 'greater', 'ec_dir': 'two-sided', 'ec_signed': 'two-sided',
+        'ece_fp': 'greater', 'ece_acc': 'greater', 'ec_underconf_mass': 'greater', 'ec_overconf_mass': 'greater',
+        'ec_dir': 'two-sided', 'ec_dir_sides': 'two-sided',
     }
 
     def ideal_calibration(self, y_true: NDArray[np.int64], y_prob: NDArray[np.float64], y_pred: NDArray[np.int64],
                           strategy: Union[int, str] = 'doane', undersampling: bool = False, adaptive: bool = False,
+                          tie_safe: bool = False, balance: str = 'sides',
                           n_sim: int = 200, seed: int = 0, level: float = 0.95,
-                          measures: Tuple[str, ...] = ('ec_g', 'ec_signed', 'ec_dir', 'ec_overconf', 'ec_underconf', 'ece_fp', 'ece_acc'),
+                          measures: Optional[Tuple[str, ...]] = None,
                           return_draws: bool = False) -> Dict[str, Dict[str, Dict[str, Union[float, Tuple[float, float], str, NDArray[np.float64]]]]]:
         """The value each measure would take if the model were perfectly calibrated.
 
@@ -372,21 +483,28 @@ class CalibrationFramework:
         every item from the model's own probabilities (``y_prob`` normalised
         row-wise), so that in the simulated world the model is calibrated by
         construction; ``y_pred`` is held fixed; and ``calibrationdiagnosis`` is
-        rerun in full, binning included, with the same ``strategy`` and
-        ``adaptive``. Per class and measure the result holds ``observed`` (the
-        value on ``y_true``), ``ideal`` (the mean over draws), ``std``, ``ci``
-        (the central ``level`` interval of the draws), and ``p_value``: the
-        Monte Carlo test of perfect calibration of these probabilities on these
-        items, (1 + number of draws at least as extreme as the observed value)
-        / (1 + n_sim), one-sided in the direction miscalibration moves the
-        measure (``IDEAL_DIRECTION``; two-sided about the ideal for the
-        balance). Draws where a measure is undefined are left out and counted
-        in ``n_undefined``. ``return_draws`` adds every draw under ``draws``.
+        rerun in full, binning included, with the same ``strategy``,
+        ``adaptive``, ``tie_safe`` and ``balance``. Per class and measure the
+        result holds ``observed`` (the value on ``y_true``), ``ideal`` (the mean
+        over draws), ``std``, ``ci`` (the central ``level`` interval of the
+        draws), and ``p_value``: the Monte Carlo test of perfect calibration of
+        these probabilities on these items, (1 + number of draws at least as
+        extreme as the observed value) / (1 + n_sim), one-sided in the
+        direction miscalibration moves the measure (``IDEAL_DIRECTION``;
+        two-sided about the ideal for a balance). ``measures`` defaults to
+        ec_g, ec_dir, ec_overconf, ec_underconf, ece_fp and ece_acc, plus the
+        two mass shares with ``balance='mass'``. Draws where a measure is
+        undefined are left out and counted in ``n_undefined``;
+        ``return_draws`` adds every draw under ``draws``.
 
         Cost: one ``calibrationdiagnosis`` per draw. The seed drives the label
         draws only; NumPy's global generator, which ``calibrationcurve``
         reseeds, is restored afterwards.
         """
+        if measures is None:
+            measures = ('ec_g', 'ec_dir', 'ec_overconf', 'ec_underconf', 'ece_fp', 'ece_acc')
+            if balance == 'mass':
+                measures = measures + ('ec_underconf_mass', 'ec_overconf_mass')
         P = np.asarray(y_prob, dtype=np.float64)
         y = np.asarray(y_true).astype(np.int64)
         pred = np.asarray(y_pred).astype(np.int64)
@@ -401,20 +519,19 @@ class CalibrationFramework:
             raise ValueError("every row of y_prob needs positive mass to draw labels from it")
         cum = np.cumsum(mass / row_sum, axis=1)
         last_positive = k - 1 - np.argmax((mass > 0)[:, ::-1], axis=1)
+        kwargs = dict(strategy=strategy, undersampling=undersampling, adaptive=adaptive, tie_safe=tie_safe, balance=balance)
 
         state = np.random.get_state()
         try:
             with warnings.catch_warnings():
                 warnings.simplefilter('ignore')
-                observed, _ = self.calibrationdiagnosis(self.select_probability(y, P, pred, n_classes=k),
-                                                        strategy=strategy, undersampling=undersampling, adaptive=adaptive)
+                observed, _ = self.calibrationdiagnosis(self.select_probability(y, P, pred, n_classes=k), **kwargs)
                 rng = np.random.default_rng(seed)
                 draws: Dict[str, Dict[str, List[float]]] = {c: {m: [] for m in measures} for c in observed}
                 for _ in range(n_sim):
                     u = 1.0 - rng.random(n)  # in (0, 1]
                     y_sim = np.minimum((cum < u[:, None]).sum(axis=1), last_positive).astype(np.int64)
-                    sim, _ = self.calibrationdiagnosis(self.select_probability(y_sim, P, pred, n_classes=k),
-                                                       strategy=strategy, undersampling=undersampling, adaptive=adaptive)
+                    sim, _ = self.calibrationdiagnosis(self.select_probability(y_sim, P, pred, n_classes=k), **kwargs)
                     for c in draws:
                         for m in measures:
                             draws[c][m].append(float(sim[c].get(m, np.nan)))
@@ -454,7 +571,8 @@ class CalibrationFramework:
         return out
 
     def h_triangle_safe(self, new_pts: NDArray[np.float64], tilde: NDArray[np.float64]) -> NDArray[np.float64]:
-        """Safe version of h_triangle that handles degenerate cases"""
+        """Safe version of h_triangle that handles degenerate cases. No longer used by calibrationdiagnosis, which
+        computes the same normalised distances exactly with normalised_distance; kept for backward compatibility."""
         height_list: List[float] = []
         for idx in range(1, len(new_pts)):
             a, b, c = tilde[idx-1], tilde[idx], new_pts[idx]
@@ -544,12 +662,12 @@ class CalibrationFramework:
             'brierloss': classes_brier
         }
 
-    def reliabilityplot(self, classes_scores: Dict[str, Dict[str, NDArray[np.float64]]], strategy: Union[int, str] = 'doane', split: bool = True, undersampling: bool = False) -> None:
+    def reliabilityplot(self, classes_scores: Dict[str, Dict[str, NDArray[np.float64]]], strategy: Union[int, str] = 'doane', split: bool = True, undersampling: bool = False, adaptive: bool = False, tie_safe: bool = False) -> None:
         marker_list: List[str] = ['o', 'v', '^', '<', '>', '1', '2', '3', '4', 's']
         plt.figure(figsize=(10, 10))
         for idx, (i, class_score) in enumerate(classes_scores.items()):
             try:
-                prob_true, prob_pred, _ = self.calibrationcurve(class_score['y'], class_score['proba'], strategy=strategy, undersampling=undersampling)
+                prob_true, prob_pred, _ = self.calibrationcurve(class_score['y'], class_score['proba'], strategy=strategy, undersampling=undersampling, adaptive=adaptive, tie_safe=tie_safe)
 
                 plt.rcParams["font.weight"] = "bold"
                 plt.rcParams["axes.labelweight"] = "bold"
@@ -592,11 +710,14 @@ class CalibrationFramework:
         return np.array(height_list)
 
     @staticmethod
-    def underbelow_line(pts: NDArray[np.float64]) -> List[str]:
-        return [ 
-                'left' if (1 - 0) * (pt[1] - 0) - (pt[0] - 0) * (1 - 0) > 0 else 
-                'right' if (1 - 0) * (pt[1] - 0) - (pt[0] - 0) * (1 - 0) < 0 else 
-                'lie' for idx, pt in enumerate(pts)
+    def underbelow_line(pts: NDArray[np.float64], atol: float = 1e-12) -> List[str]:
+        """'left' (above the diagonal, y > x: under-forecast), 'right' (below, y < x: over-forecast) or 'lie' (on it)
+        for each point (x, y). Points within atol of the diagonal lie on it: the mean score of a bin is a floating-point
+        sum, so a bin that is exactly calibrated (100 rows at 0.4 with 40 positives) has x = 0.4000000000000001."""
+        return [
+                'lie' if np.isclose(pt[1], pt[0], rtol=0, atol=atol) else
+                'left' if pt[1] > pt[0] else
+                'right' for pt in pts
                 ]
 
     @staticmethod
@@ -682,5 +803,85 @@ class CalibrationFramework:
         return bin_heights
 
     @staticmethod
+    def compute_tie_safe_cuts(cum_counts: NDArray[np.int64], b: int) -> NDArray[np.int64]:
+        """
+        Equal-mass bins made of whole distinct scores.
+
+        Same targets as compute_equal_mass_bin_heights (a cut after every n // b samples, the last bin takes
+        the remainder), but a bin can only end where a block of tied scores ends:
+        1. each target k * (n // b), k = 1..b-1, is moved to the end of a tied block nearest to it (the
+           targets that meet at the same place give one cut);
+        2. a distinct score that holds n // b samples or more alone (a heavy block) gets a cut on both sides;
+        3. a bin with fewer than half of n // b samples joins its smaller neighbour, and while there are
+           more than b bins the smallest one does too (so a heavy block is a bin of its own unless a sliver
+           next to it has no other neighbour).
+        So a block is never split, no bin is a sliver, there are at most b bins (fewer when blocks take the
+        place of several bins), and with all-distinct scores the bins are exactly those of
+        compute_equal_mass_bin_heights.
+
+        cum_counts is the cumulative number of samples over the distinct scores in increasing order,
+        starting with 0. A returned cut k separates the distinct scores k - 1 and k.
+        """
+        n: int = int(cum_counts[-1])
+        n_unique: int = len(cum_counts) - 1
+        b = max(1, min(b, n))
+        bin_size: int = max(1, n // b)
+
+        targets: NDArray[np.int64] = bin_size * np.arange(1, b)
+        if n_unique == n:
+            return targets.astype(np.int64)  # All-distinct scores: plain equal-mass cuts
+
+        # 1. The block end nearest to each target (the upper one when both are as near)
+        upper: NDArray[np.int64] = np.searchsorted(cum_counts, targets, side='left')
+        lower: NDArray[np.int64] = np.maximum(upper - 1, 0)
+        nearest: NDArray[np.int64] = np.where(targets - cum_counts[lower] < cum_counts[upper] - targets, lower, upper)
+        # 2. Heavy blocks start and end a bin
+        heavy: NDArray[np.int64] = np.flatnonzero(np.diff(cum_counts) >= bin_size)
+        cuts_arr = np.unique(np.concatenate([nearest, heavy, heavy + 1]))
+        cuts: List[int] = cuts_arr[(cuts_arr > 0) & (cuts_arr < n_unique)].tolist()
+
+        # 3. Slivers, and bins beyond b, join their smaller neighbour
+        while cuts:
+            sizes: NDArray[np.int64] = np.diff(cum_counts[[0] + cuts + [n_unique]])
+            i: int = int(np.argmin(sizes))  # The first one when several are as small
+            if 2 * sizes[i] >= bin_size and len(sizes) <= b:
+                break
+            if i == 0 or (i < len(sizes) - 1 and sizes[i + 1] < sizes[i - 1]):
+                del cuts[i]  # Joins the next bin
+            else:
+                del cuts[i - 1]  # Joins the previous bin
+
+        return np.array(cuts, dtype=np.int64)
+
+    @staticmethod
+    def tie_safe_bin_edges(unique_probs: NDArray[np.float64], cuts: NDArray[np.int64]) -> NDArray[np.float64]:
+        """Bin edges half-way between the distinct scores that each cut separates, so that no score lies on an edge."""
+        lower: NDArray[np.float64] = unique_probs[cuts - 1]
+        upper: NDArray[np.float64] = unique_probs[cuts]
+        inner: NDArray[np.float64] = (lower + upper) / 2
+        # Two adjacent floats have no value in between: fall back on the upper one, which np.digitize (left-closed) sends to the upper bin
+        inner = np.where((inner > lower) & (inner < upper), inner, upper)
+        return np.concatenate([[min(0.0, unique_probs[0])], inner, [max(1.0, unique_probs[-1])]])
+
+    @staticmethod
     def is_monotonic(bin_heights: List[float]) -> bool:
         return all(bin_heights[i] <= bin_heights[i + 1] for i in range(len(bin_heights) - 1))
+
+    @staticmethod
+    def is_monotonic_tie_safe(counts: NDArray[np.int64], positives: NDArray[np.float64], robust: bool = False) -> bool:
+        """
+        Same check as is_monotonic on the bin heights positives / counts. With robust=True, a decrease between
+        two bins whose sizes differ by a factor of 2 or more only counts if it survives changing one label in
+        the smaller bin: next to a large tied block (for example the block at 0.00 of a one-vs-rest column) a
+        small bin that holds one positive less than expected would otherwise stop the sweep. Bins of similar
+        size are checked exactly as by is_monotonic.
+        """
+        c0, c1 = counts[:-1], counts[1:]
+        p0, p1 = positives[:-1], positives[1:]
+        decrease: NDArray[np.bool_] = p0 * c1 > p1 * c0
+        if robust and np.any(decrease):
+            unequal: NDArray[np.bool_] = np.maximum(c0, c1) >= 2 * np.minimum(c0, c1)
+            # One positive more in the smaller bin on the right, or one less in the smaller bin on the left
+            survives: NDArray[np.bool_] = np.where(c0 >= c1, p0 * c1 > (p1 + 1) * c0, (p0 - 1) * c1 > p1 * c0)
+            decrease &= ~unequal | survives
+        return not np.any(decrease)
