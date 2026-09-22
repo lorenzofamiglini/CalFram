@@ -8,12 +8,14 @@ import warnings
 
 # str strategies: the rules of np.histogram_bin_edges, or 'unique' (one bin per unique score)
 HISTOGRAM_RULES = ('auto', 'fd', 'doane', 'scott', 'stone', 'rice', 'sturges', 'sqrt')
-STR_STRATEGIES = HISTOGRAM_RULES + ('unique',)
+STR_STRATEGIES = HISTOGRAM_RULES + ('unique', 'pooled_sweep')
 
 
 def check_strategy(strategy: Union[int, str]) -> None:
     if isinstance(strategy, str) and strategy not in STR_STRATEGIES:
         raise ValueError(f"Unknown strategy {strategy!r}: use an int (number of quantile bins), 'unique' (one bin per "
+                         f"unique score), 'pooled_sweep' (one bin per unique score, adjacent bins pooled until the observed "
+                         f"frequencies are monotone; ties never split) "
                          f"unique score) or one of the np.histogram_bin_edges rules {HISTOGRAM_RULES}.")
 
 
@@ -72,6 +74,11 @@ class CalibrationFramework:
             prob = prob[:, ndim]
         else:
             prob = np.max(prob, axis=-1)
+
+        if method == 'pooled_sweep' and not adaptive:
+            # Tie-safe by construction (whole distinct scores are pooled), so tie_safe has nothing to add
+            binids, lower_edges, binfr = self.pooled_sweep_bins(prob, Y)
+            return {'bins': lower_edges, 'binids': binids, 'binfr': binfr}
 
         n_classes: int = len(np.unique(Y))
 
@@ -191,12 +198,21 @@ class CalibrationFramework:
 
         return prob_true, prob_pred, bins_dict
 
-    def select_probability(self, y_actual: NDArray[np.int64], y_prob: NDArray[np.float64], y_pred: NDArray[np.int64]) -> Dict[str, Dict[str, NDArray[np.float64]]]:
+    def select_probability(self, y_actual: NDArray[np.int64], y_prob: NDArray[np.float64], y_pred: NDArray[np.int64], n_classes: Optional[int] = None) -> Dict[str, Dict[str, NDArray[np.float64]]]:
         """
-        Fixed version that handles class probability alignment correctly
+        Fixed version that handles class probability alignment correctly.
+
+        ``n_classes``: the label set is 0 .. n_classes - 1, one per column of
+        ``y_prob``, whether or not every label occurs in ``y_actual``. Without
+        it the labels are the distinct values of ``y_actual``, as before.
         """
 
-        unique_labels = np.unique(y_actual)
+        if n_classes is None:
+            unique_labels = np.unique(y_actual)
+        else:
+            unique_labels = np.arange(n_classes)
+            if not np.isin(y_actual, unique_labels).all() or not np.isin(y_pred, unique_labels).all():
+                raise ValueError(f"labels must lie in 0 .. {n_classes - 1} when n_classes is given")
         label_map = {label: idx for idx, label in enumerate(unique_labels)}
         
         y_actual_mapped = np.array([label_map[label] for label in y_actual])
@@ -267,6 +283,7 @@ class CalibrationFramework:
         binning_dict: Dict[str, Dict[str, Union[NDArray[np.float64], NDArray[np.int64], float]]] = {}
         
         for i in classes_scores.keys():
+            bins_dict: Dict[str, Union[NDArray[np.float64], NDArray[np.int64], float]] = {}
             try:
                 y, x, bins_dict = self.calibrationcurve(classes_scores[i]['y'], classes_scores[i]['proba'], strategy=strategy, undersampling=undersampling, adaptive=adaptive, tie_safe=tie_safe)
                 new_pts: NDArray[np.float64] = self.end_points(x, y)
@@ -391,6 +408,167 @@ class CalibrationFramework:
         x = np.asarray(x, dtype=float)
         y = np.asarray(y, dtype=float)
         return np.abs(y - x) / np.maximum(x, 1 - x)
+
+    @staticmethod
+    def pooled_sweep_bins(prob: NDArray[np.float64], y: NDArray[np.int64]) -> Tuple[NDArray[np.int64], NDArray[np.float64], NDArray[np.float64]]:
+        """Tie-safe monotone binning of one probability against a 0/1 outcome.
+
+        Start from one bin per distinct value of ``prob`` (rounded to 1e-9, so
+        float spellings of one value are one bin), in increasing order. While a
+        bin's observed frequency is strictly above the next bin's, pool the two
+        (pool-adjacent-violators). The result is the coarsest partition of the
+        distinct values into runs whose observed frequencies are non-decreasing:
+        the isotonic regression of ``y`` on ``prob``. A tied block of items is
+        never split, because pooling only ever joins whole distinct values, and
+        the number of bins is chosen by the data, not by a target count: where
+        ``tie_safe=True`` keeps equal-mass bins and stops the sweep at the first
+        violation, this pools the violators and keeps everything else apart.
+
+        Returns ``(binids, bins, binfr)`` in the format of ``binning_schema``:
+        the bin of each item, the lowest probability in each bin, and the share
+        of items in each bin, bins in increasing order of probability.
+        """
+        v = np.round(np.asarray(prob, dtype=np.float64), 9)
+        t = np.asarray(y, dtype=np.float64)
+        if v.ndim != 1 or v.shape != t.shape or len(v) == 0:
+            raise ValueError("prob and y must be non-empty vectors of one length")
+        if not np.isin(t, (0.0, 1.0)).all():
+            raise ValueError("y must be 0/1")
+        values, inverse, counts = np.unique(v, return_inverse=True, return_counts=True)
+        hits = np.bincount(inverse, weights=t, minlength=len(values))
+        first: List[int] = []
+        size: List[float] = []
+        hit: List[float] = []
+        for j in range(len(values)):
+            first.append(j)
+            size.append(float(counts[j]))
+            hit.append(float(hits[j]))
+            # pool while hit[-2] / size[-2] > hit[-1] / size[-1], without dividing
+            while len(size) > 1 and hit[-2] * size[-1] > hit[-1] * size[-2]:
+                first.pop()
+                s_last, h_last = size.pop(), hit.pop()
+                size[-1] += s_last
+                hit[-1] += h_last
+        n_values_per_bin = np.diff(np.array(first + [len(values)]))
+        bin_of_value = np.repeat(np.arange(len(first)), n_values_per_bin)
+        binids = bin_of_value[inverse].astype(np.int64)
+        return binids, values[np.array(first)], np.array(size) / len(v)
+
+    # Which way miscalibration moves each measure, for the Monte Carlo p-value
+    # of ``ideal_calibration``: an index that is 1 when perfect falls, an error
+    # or a miscalibration share rises, and a balance moves either way.
+    IDEAL_DIRECTION: Dict[str, str] = {
+        'ec_g': 'less', 'ec_overconf': 'less', 'ec_underconf': 'less',
+        'ece_fp': 'greater', 'ece_acc': 'greater', 'ec_underconf_mass': 'greater', 'ec_overconf_mass': 'greater',
+        'ec_dir': 'two-sided', 'ec_dir_sides': 'two-sided',
+    }
+
+    def ideal_calibration(self, y_true: NDArray[np.int64], y_prob: NDArray[np.float64], y_pred: NDArray[np.int64],
+                          strategy: Union[int, str] = 'doane', undersampling: bool = False, adaptive: bool = False,
+                          tie_safe: bool = False, balance: str = 'sides',
+                          n_sim: int = 200, seed: int = 0, level: float = 0.95,
+                          measures: Optional[Tuple[str, ...]] = None,
+                          return_draws: bool = False) -> Dict[str, Dict[str, Dict[str, Union[float, Tuple[float, float], str, NDArray[np.float64]]]]]:
+        """The value each measure would take if the model were perfectly calibrated.
+
+        ECI global is 1 only in the limit. On a finite sample a perfectly
+        calibrated model scores below 1, and a binned error scores above 0, by
+        an amount that depends on the number of items, on how many distinct
+        probabilities the model emits and on how many bins the binning ends up
+        with. So two models, or two tasks, are only comparable next to that
+        value, and a raw index cannot say whether a model is miscalibrated or
+        merely finite.
+
+        The ideal value is simulated. ``n_sim`` times, a label is drawn for
+        every item from the model's own probabilities (``y_prob`` normalised
+        row-wise), so that in the simulated world the model is calibrated by
+        construction; ``y_pred`` is held fixed; and ``calibrationdiagnosis`` is
+        rerun in full, binning included, with the same ``strategy``,
+        ``adaptive``, ``tie_safe`` and ``balance``. Per class and measure the
+        result holds ``observed`` (the value on ``y_true``), ``ideal`` (the mean
+        over draws), ``std``, ``ci`` (the central ``level`` interval of the
+        draws), and ``p_value``: the Monte Carlo test of perfect calibration of
+        these probabilities on these items, (1 + number of draws at least as
+        extreme as the observed value) / (1 + n_sim), one-sided in the
+        direction miscalibration moves the measure (``IDEAL_DIRECTION``;
+        two-sided about the ideal for a balance). ``measures`` defaults to
+        ec_g, ec_dir, ec_overconf, ec_underconf, ece_fp and ece_acc, plus the
+        two mass shares with ``balance='mass'``. Draws where a measure is
+        undefined are left out and counted in ``n_undefined``;
+        ``return_draws`` adds every draw under ``draws``.
+
+        Cost: one ``calibrationdiagnosis`` per draw. The seed drives the label
+        draws only; NumPy's global generator, which ``calibrationcurve``
+        reseeds, is restored afterwards.
+        """
+        if measures is None:
+            measures = ('ec_g', 'ec_dir', 'ec_overconf', 'ec_underconf', 'ece_fp', 'ece_acc')
+            if balance == 'mass':
+                measures = measures + ('ec_underconf_mass', 'ec_overconf_mass')
+        P = np.asarray(y_prob, dtype=np.float64)
+        y = np.asarray(y_true).astype(np.int64)
+        pred = np.asarray(y_pred).astype(np.int64)
+        if P.ndim != 2 or len(P) != len(y) or len(pred) != len(y):
+            raise ValueError("y_prob must be (n, K) with y_true and y_pred of length n")
+        if n_sim < 1:
+            raise ValueError("n_sim must be at least 1")
+        n, k = P.shape
+        mass = np.clip(P, 0.0, None)
+        row_sum = mass.sum(axis=1, keepdims=True)
+        if (row_sum <= 0).any():
+            raise ValueError("every row of y_prob needs positive mass to draw labels from it")
+        cum = np.cumsum(mass / row_sum, axis=1)
+        last_positive = k - 1 - np.argmax((mass > 0)[:, ::-1], axis=1)
+        kwargs = dict(strategy=strategy, undersampling=undersampling, adaptive=adaptive, tie_safe=tie_safe, balance=balance)
+
+        state = np.random.get_state()
+        try:
+            with warnings.catch_warnings():
+                warnings.simplefilter('ignore')
+                observed, _ = self.calibrationdiagnosis(self.select_probability(y, P, pred, n_classes=k), **kwargs)
+                rng = np.random.default_rng(seed)
+                draws: Dict[str, Dict[str, List[float]]] = {c: {m: [] for m in measures} for c in observed}
+                for _ in range(n_sim):
+                    u = 1.0 - rng.random(n)  # in (0, 1]
+                    y_sim = np.minimum((cum < u[:, None]).sum(axis=1), last_positive).astype(np.int64)
+                    sim, _ = self.calibrationdiagnosis(self.select_probability(y_sim, P, pred, n_classes=k), **kwargs)
+                    for c in draws:
+                        for m in measures:
+                            draws[c][m].append(float(sim[c].get(m, np.nan)))
+        finally:
+            np.random.set_state(state)
+
+        alpha = (1.0 - level) / 2.0
+        out: Dict[str, Dict[str, Dict[str, Union[float, Tuple[float, float], str, NDArray[np.float64]]]]] = {}
+        for c in draws:
+            out[c] = {}
+            for m in measures:
+                v = np.array(draws[c][m], dtype=np.float64)
+                ok = v[np.isfinite(v)]
+                obs = float(observed[c].get(m, np.nan))
+                direction = self.IDEAL_DIRECTION.get(m, 'two-sided')
+                entry: Dict[str, Union[float, Tuple[float, float], str, NDArray[np.float64]]] = {
+                    'observed': obs, 'direction': direction, 'n_undefined': float(len(v) - len(ok)),
+                }
+                if len(ok) == 0 or not np.isfinite(obs):
+                    entry.update({'ideal': np.nan, 'std': np.nan, 'ci': (np.nan, np.nan), 'p_value': np.nan})
+                else:
+                    ideal = float(ok.mean())
+                    if direction == 'less':
+                        extreme = ok <= obs
+                    elif direction == 'greater':
+                        extreme = ok >= obs
+                    else:
+                        extreme = np.abs(ok - ideal) >= abs(obs - ideal)
+                    entry.update({
+                        'ideal': ideal, 'std': float(ok.std(ddof=1)) if len(ok) > 1 else 0.0,
+                        'ci': (float(np.quantile(ok, alpha)), float(np.quantile(ok, 1.0 - alpha))),
+                        'p_value': float((1 + int(extreme.sum())) / (1 + len(ok))),
+                    })
+                if return_draws:
+                    entry['draws'] = v
+                out[c][m] = entry
+        return out
 
     def h_triangle_safe(self, new_pts: NDArray[np.float64], tilde: NDArray[np.float64]) -> NDArray[np.float64]:
         """Safe version of h_triangle that handles degenerate cases. No longer used by calibrationdiagnosis, which
